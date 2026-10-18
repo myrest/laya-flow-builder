@@ -1,0 +1,14 @@
+{
+  "name": "laya-test",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node dev.mjs",
+    "start": "tsx server.ts",
+    "build": "npm --prefix web run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json && npm --prefix web run typecheck",
+    "test": "tsx --test test/decision-engine.test.ts",
+    "test-client": "tsx test-client.ts"
+  }
+}

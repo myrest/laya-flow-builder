@@ -1,0 +1,5 @@
+data/decision-system.json
+data/decision-system.json.tmp-*
+node_modules
+web/dist/
+*.tsbuildinfo
