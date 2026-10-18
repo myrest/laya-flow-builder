@@ -11,8 +11,12 @@ interface BatchTestPanelProps {
   issues: string[];
   inspectorValid: boolean;
   dirty: boolean;
+  flowBusy: boolean;
   testing: boolean;
   onTestingChange: (testing: boolean) => void;
+  onDraftDirtyChange: (dirty: boolean) => void;
+  onSavingCasesChange: (saving: boolean) => void;
+  hidden: boolean;
 }
 
 interface TestCaseDraft {
@@ -31,26 +35,37 @@ function resultLabel(result: FlowTestCaseResult | undefined, stale: boolean): st
   return "執行錯誤";
 }
 
-export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, onTestingChange }: BatchTestPanelProps) {
+export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, onTestingChange, onDraftDirtyChange, onSavingCasesChange, flowBusy, hidden }: BatchTestPanelProps) {
   const [suite, setSuite] = useState<FlowTestSuite | null>(null);
   const [loading, setLoading] = useState(false);
   const [savingCases, setSavingCases] = useState(false);
   const [caseError, setCaseError] = useState("");
   const [draft, setDraft] = useState<TestCaseDraft | null>(null);
-  const [draftDirty, setDraftDirty] = useState(false);
+  const [draftDirty, setDraftDirtyState] = useState(false);
   const [runningError, setRunningError] = useState("");
+
+  function changeDraftDirty(value: boolean): void {
+    setDraftDirtyState(value);
+    onDraftDirtyChange(value);
+  }
+
+  function changeSavingCases(value: boolean): void {
+    setSavingCases(value);
+    onSavingCasesChange(value);
+  }
 
   useEffect(() => {
     if (!flow) {
       setSuite(null);
       setLoading(false);
+      changeDraftDirty(false);
       return;
     }
     let active = true;
     setLoading(true);
     setCaseError("");
     setDraft(null);
-    setDraftDirty(false);
+    changeDraftDirty(false);
     getFlowTestSuite(flow.id).then((loaded) => {
       if (active) setSuite(loaded);
     }).catch((error: unknown) => {
@@ -59,7 +74,7 @@ export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, o
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [flow?.id]);
+  }, [flow?.id, onDraftDirtyChange]);
 
   const currentRevision = useMemo(() => flow ? flowRevision(flow) : "", [flow]);
   const stale = Boolean(suite?.lastRun && suite.lastRun.flowRevision !== currentRevision);
@@ -69,10 +84,10 @@ export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, o
   const failedCount = suite?.lastRun?.results.filter((result) => result.status === "failed").length ?? 0;
   const errorCount = suite?.lastRun?.results.filter((result) => result.status === "error").length ?? 0;
   const enabledCount = suite?.cases.filter((testCase) => testCase.enabled).length ?? 0;
-  const blocked = !flow || loading || savingCases || testing || Boolean(draft) || issues.length > 0 || !inspectorValid;
+  const blocked = !flow || loading || savingCases || testing || flowBusy || Boolean(draft) || issues.length > 0 || !inspectorValid;
 
   function openDraft(testCase?: FlowTestCase): void {
-    if (draftDirty && !window.confirm("捨棄尚未儲存的測試案例變更？")) return;
+    if (flowBusy || (draftDirty && !window.confirm("捨棄尚未儲存的測試案例變更？"))) return;
     setCaseError("");
     setDraft(testCase
       ? {
@@ -83,7 +98,7 @@ export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, o
           expectedJson: JSON.stringify(testCase.expectedOutput, null, 2),
         }
       : { id: null, name: "", inputMode: "text", inputText: "", expectedJson: "{}" });
-    setDraftDirty(false);
+    changeDraftDirty(false);
   }
 
   function changeDraftInputMode(inputMode: "text" | "json"): void {
@@ -99,17 +114,17 @@ export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, o
       }
     }
     setDraft({ ...draft, inputMode, inputText });
-    setDraftDirty(true);
+    changeDraftDirty(true);
   }
 
   function cancelDraft(): void {
     if (draftDirty && !window.confirm("捨棄尚未儲存的測試案例變更？")) return;
     setDraft(null);
-    setDraftDirty(false);
+    changeDraftDirty(false);
   }
 
   async function saveDraft(): Promise<void> {
-    if (!flow || !suite || !draft || savingCases) return;
+    if (!flow || !suite || !draft || savingCases || flowBusy) return;
     if (draft.name.trim().length === 0 || draft.name.trim().length > 120) {
       setCaseError("案例名稱需為 1～120 個字元。");
       return;
@@ -127,38 +142,38 @@ export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, o
     const cases = draft.id
       ? suite.cases.map((testCase) => testCase.id === draft.id ? { ...updated, enabled: testCase.enabled } : testCase)
       : [...suite.cases, updated];
-    setSavingCases(true);
+    changeSavingCases(true);
     setCaseError("");
     try {
       setSuite(await saveFlowTestCases(flow.id, suite.revision, cases));
       setDraft(null);
-      setDraftDirty(false);
+      changeDraftDirty(false);
     } catch (error) {
       setCaseError(error instanceof Error ? error.message : String(error));
     } finally {
-      setSavingCases(false);
+      changeSavingCases(false);
     }
   }
 
   async function updateCases(cases: FlowTestCase[]): Promise<void> {
-    if (!flow || !suite || savingCases) return;
-    setSavingCases(true);
+    if (!flow || !suite || savingCases || flowBusy) return;
+    changeSavingCases(true);
     setCaseError("");
     try {
       setSuite(await saveFlowTestCases(flow.id, suite.revision, cases));
     } catch (error) {
       setCaseError(error instanceof Error ? error.message : String(error));
     } finally {
-      setSavingCases(false);
+      changeSavingCases(false);
     }
   }
 
   async function deleteCase(testCase: FlowTestCase): Promise<void> {
-    if (!suite || savingCases || !window.confirm(`確定刪除測試案例「${testCase.name}」？`)) return;
+    if (!suite || savingCases || flowBusy || !window.confirm(`確定刪除測試案例「${testCase.name}」？`)) return;
     await updateCases(suite.cases.filter((candidate) => candidate.id !== testCase.id));
     if (draft?.id === testCase.id) {
       setDraft(null);
-      setDraftDirty(false);
+      changeDraftDirty(false);
     }
   }
 
@@ -176,10 +191,10 @@ export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, o
   }
 
   return (
-    <div className="test-panel__body batch-test-panel" role="tabpanel" id="batch-test-panel" aria-labelledby="test-mode-batch">
+    <div className="test-panel__body batch-test-panel" role="tabpanel" id="batch-test-panel" aria-labelledby="test-mode-batch" hidden={hidden}>
       <div className="batch-test__toolbar">
         <div><strong>{suite?.cases.length ?? 0} 個案例</strong><span>{enabledCount} 個啟用</span></div>
-        <button type="button" className="button button--subtle button--small" onClick={() => openDraft()} disabled={!flow || !suite || loading || savingCases || testing || suite.cases.length >= MAX_FLOW_TEST_CASES}>＋ 新增案例</button>
+        <button type="button" className="button button--subtle button--small" onClick={() => openDraft()} disabled={!flow || !suite || loading || savingCases || testing || flowBusy || suite.cases.length >= MAX_FLOW_TEST_CASES}>＋ 新增案例</button>
       </div>
       <p className="helper-copy">案例輸入可用文字或 JSON。批次測試會使用目前流程（包含未儲存變更），逐案執行並比對輸出 JSON；物件欄位順序不影響結果，陣列順序有影響。</p>
       {dirty && <p className="batch-test__notice">流程尚未儲存。本次執行會測試畫布上的版本。</p>}
@@ -199,10 +214,10 @@ export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, o
             const status = testCase.enabled ? resultLabel(result, stale) : "已停用";
             return <li className="batch-case" key={testCase.id}>
               <div className="batch-case__head">
-                <label className="batch-case__enabled"><input type="checkbox" checked={testCase.enabled} disabled={savingCases || testing || Boolean(draft)} onChange={(event) => void updateCases(suite.cases.map((candidate) => candidate.id === testCase.id ? { ...candidate, enabled: event.target.checked } : candidate))} /><span className="sr-only">啟用 {testCase.name}</span></label>
+                <label className="batch-case__enabled"><input type="checkbox" checked={testCase.enabled} disabled={savingCases || testing || flowBusy || Boolean(draft)} onChange={(event) => void updateCases(suite.cases.map((candidate) => candidate.id === testCase.id ? { ...candidate, enabled: event.target.checked } : candidate))} /><span className="sr-only">啟用 {testCase.name}</span></label>
                 <div className="batch-case__title"><strong>{testCase.name}</strong><span className={`batch-status batch-status--${stale ? "stale" : result?.status ?? "new"}`}>{status}</span></div>
-                <button type="button" className="icon-button" aria-label={`編輯測試案例 ${testCase.name}`} onClick={() => openDraft(testCase)} disabled={savingCases || testing || Boolean(draft)}>編輯</button>
-                <button type="button" className="icon-button danger" aria-label={`刪除測試案例 ${testCase.name}`} onClick={() => void deleteCase(testCase)} disabled={savingCases || testing || Boolean(draft)}>刪除</button>
+                <button type="button" className="icon-button" aria-label={`編輯測試案例 ${testCase.name}`} onClick={() => openDraft(testCase)} disabled={savingCases || testing || flowBusy || Boolean(draft)}>編輯</button>
+                <button type="button" className="icon-button danger" aria-label={`刪除測試案例 ${testCase.name}`} onClick={() => void deleteCase(testCase)} disabled={savingCases || testing || flowBusy || Boolean(draft)}>刪除</button>
               </div>
               <p className="batch-case__input">輸入：<code>{JSON.stringify(testCase.input)}</code></p>
               {result?.status === "error" && !stale && <p className="batch-case__error" role="alert">{result.error}</p>}
@@ -217,12 +232,12 @@ export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, o
           })}
         </ol>}
         {draft && <form className="batch-case-editor" onSubmit={(event) => { event.preventDefault(); void saveDraft(); }}>
-          <div className="batch-case-editor__heading"><strong>{draft.id ? "編輯測試案例" : "新增測試案例"}</strong><button type="button" className="icon-button" aria-label="取消編輯測試案例" onClick={cancelDraft} disabled={savingCases}>×</button></div>
-          <label className="field"><span>案例名稱</span><input maxLength={120} value={draft.name} onChange={(event) => { setDraft({ ...draft, name: event.target.value }); setDraftDirty(true); }} placeholder="例如：明確要求開啟風扇" /></label>
-          <div className="input-toggle" role="group" aria-label="測試輸入格式"><button type="button" className={draft.inputMode === "text" ? "is-active" : ""} onClick={() => changeDraftInputMode("text")}>文字</button><button type="button" className={draft.inputMode === "json" ? "is-active" : ""} onClick={() => changeDraftInputMode("json")}>JSON</button></div>
-          <label className="field"><span>{draft.inputMode === "text" ? "測試文字" : "JSON 輸入"}</span><textarea rows={draft.inputMode === "text" ? 2 : 4} spellCheck={false} value={draft.inputText} onChange={(event) => { setDraft({ ...draft, inputText: event.target.value }); setDraftDirty(true); }} placeholder={draft.inputMode === "text" ? "例如：打開風扇" : '{ "text": "打開風扇" }'} /></label>
-          <label className="field"><span>預期輸出 JSON</span><textarea rows={5} spellCheck={false} value={draft.expectedJson} onChange={(event) => { setDraft({ ...draft, expectedJson: event.target.value }); setDraftDirty(true); }} /></label>
-          <div className="batch-case-editor__actions"><button type="button" className="button button--subtle" onClick={cancelDraft} disabled={savingCases}>取消</button><button type="submit" className="button button--primary" disabled={savingCases}>{savingCases ? "儲存中…" : "儲存案例"}</button></div>
+          <div className="batch-case-editor__heading"><strong>{draft.id ? "編輯測試案例" : "新增測試案例"}</strong><button type="button" className="icon-button" aria-label="取消編輯測試案例" onClick={cancelDraft} disabled={savingCases || flowBusy}>×</button></div>
+          <label className="field"><span>案例名稱</span><input maxLength={120} value={draft.name} onChange={(event) => { setDraft({ ...draft, name: event.target.value }); changeDraftDirty(true); }} placeholder="例如：明確要求開啟風扇" disabled={flowBusy} /></label>
+          <div className="input-toggle" role="group" aria-label="測試輸入格式"><button type="button" className={draft.inputMode === "text" ? "is-active" : ""} onClick={() => changeDraftInputMode("text")} disabled={flowBusy}>文字</button><button type="button" className={draft.inputMode === "json" ? "is-active" : ""} onClick={() => changeDraftInputMode("json")} disabled={flowBusy}>JSON</button></div>
+          <label className="field"><span>{draft.inputMode === "text" ? "測試文字" : "JSON 輸入"}</span><textarea rows={draft.inputMode === "text" ? 2 : 4} spellCheck={false} value={draft.inputText} onChange={(event) => { setDraft({ ...draft, inputText: event.target.value }); changeDraftDirty(true); }} placeholder={draft.inputMode === "text" ? "例如：打開風扇" : '{ "text": "打開風扇" }'} disabled={flowBusy} /></label>
+          <label className="field"><span>預期輸出 JSON</span><textarea rows={5} value={draft.expectedJson} onChange={(event) => { setDraft({ ...draft, expectedJson: event.target.value }); changeDraftDirty(true); }} disabled={flowBusy} /></label>
+          <div className="batch-case-editor__actions"><button type="button" className="button button--subtle" onClick={cancelDraft} disabled={savingCases || flowBusy}>取消</button><button type="submit" className="button button--primary" disabled={savingCases || flowBusy}>{savingCases ? "儲存中…" : "儲存案例"}</button></div>
         </form>}
         <div className="batch-test__actions">
           <button type="button" className="button button--primary button--wide" onClick={() => void runBatch()} disabled={blocked || enabledCount === 0}>{testing ? "逐案執行中…" : "執行啟用案例"}</button>

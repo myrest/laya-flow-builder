@@ -9,7 +9,6 @@ interface ApiResponse {
     confidence?: number;
   }>;
   usage?: { input_tokens: number; output_tokens: number };
-  durationMs?: number;
   error?: string;
 }
 
@@ -60,7 +59,7 @@ try {
     process.exit(1);
   }
 
-  console.log(`\n[成功收到回應] (網路往返耗時: ${duration} ms, 伺服器推論耗時: ${data.durationMs} ms)`);
+  console.log(`\n[成功收到回應] (網路往返耗時: ${duration} ms)`);
   console.log("-------------------------------------------------");
   console.log("模型:", data.model);
   console.log("Token 用量:", data.usage);

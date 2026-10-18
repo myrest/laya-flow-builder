@@ -141,9 +141,9 @@ export function validateFlow(flow: DecisionFlow): string[] {
           }
           if (keys.has(field.key)) issue(issues, node, `回傳欄位名稱重複：${field.key}。`);
           keys.add(field.key);
-          if (field.value?.kind === "decision" && typeof field.value.nodeId === "string") {
-            if (!nodeById.has(field.value.nodeId) && !ids.has(field.value.nodeId)) issue(issues, node, `回傳欄位「${field.key}」引用了不存在的決策。`);
-          } else if (field.value?.kind !== "literal") issue(issues, node, `回傳欄位「${field.key}」的值設定不正確。`);
+          if (field.value?.kind !== "literal" && !(field.value?.kind === "decision" && typeof field.value.nodeId === "string")) {
+            issue(issues, node, `回傳欄位「${field.key}」的值設定不正確。`);
+          }
         }
       }
     } else if (node.type !== "start") issue(issues, node, "不支援的節點類型。");
@@ -223,7 +223,7 @@ export function validateFlow(flow: DecisionFlow): string[] {
     for (const node of flow.nodes) if (!visited.has(node.id)) issue(issues, node, "節點無法從起點到達。");
 
     for (const node of flow.nodes) {
-      if (!decisionNode(node)) continue;
+      if (!decisionNode(node) && node.type !== "end") continue;
       const ancestors = new Set<string>();
       const traversed = new Set<string>();
       let cursor = incoming.get(node.id)?.[0]?.source;
@@ -232,7 +232,16 @@ export function validateFlow(flow: DecisionFlow): string[] {
         ancestors.add(cursor);
         cursor = incoming.get(cursor)?.[0]?.source;
       }
-      for (const ref of node.data.inputNodeIds) if (!ancestors.has(ref)) issue(issues, node, `前置結果「${nodeById.get(ref)?.data.label ?? ref}」必須位於此節點上游。`);
+      if (decisionNode(node)) {
+        for (const ref of node.data.inputNodeIds) if (!ancestors.has(ref)) issue(issues, node, `前置結果「${nodeById.get(ref)?.data.label ?? ref}」必須位於此節點上游。`);
+      } else if (node.type === "end" && Array.isArray(node.data.fields)) {
+        for (const field of node.data.fields) {
+          if (field?.value?.kind !== "decision") continue;
+          const target = nodeById.get(field.value.nodeId);
+          if (!target || target.type !== "decision") issue(issues, node, `回傳欄位「${field.key}」引用了無效的決策節點。`);
+          else if (!ancestors.has(target.id)) issue(issues, node, `回傳欄位「${field.key}」引用的決策必須位於此節點上游。`);
+        }
+      }
     }
   }
 

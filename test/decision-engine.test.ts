@@ -60,6 +60,45 @@ test("a complete decision tree validates and every choice output has one route",
   assert.deepEqual(validateFlow(branchFlow()), []);
 });
 
+test("end output references execute independently of node array order", async () => {
+  const flow = branchFlow();
+  flow.nodes.reverse();
+  assert.deepEqual(validateFlow(flow), []);
+  const result = await runFlow(flow, "no", mockLaya({
+    type: "choice", choice: "no", probabilities: { yes: 0.1, no: 0.9 }, confidence: 0.8, rl_agent: { act_probability: 0.9 },
+  }));
+  assert.deepEqual(result.output, { decision: "no" });
+});
+
+test("invalid end output references reject before model inference", async () => {
+  for (const ref of ["start", "yes-end", "missing", "other-decision"]) {
+    const flow = branchFlow();
+    const end = flow.nodes.find((node) => node.id === "no-end");
+    assert.ok(end && end.type === "end");
+    end.data.fields = [{ id: "output", key: "output", value: { kind: "decision", nodeId: ref } }];
+    if (ref === "other-decision") {
+      flow.nodes.push(
+        choiceNode("other-decision", "Other branch", 100),
+        { id: "other-end", type: "end", position: { x: 700, y: 100 }, data: { label: "Other end", fields: [] } },
+      );
+      flow.edges = flow.edges.map((edge) => edge.id === "yes-edge" ? { ...edge, target: "other-decision" } : edge);
+      flow.edges.push(
+        { id: "other-yes", source: "other-decision", target: "yes-end", sourceHandle: "choice:yes" },
+        { id: "other-no", source: "other-decision", target: "other-end", sourceHandle: "choice:no" },
+      );
+    }
+    assert.ok(validateFlow(flow).some((message) => message.includes("回傳欄位")), ref);
+    let calls = 0;
+    await assert.rejects(runFlow(flow, "input", {
+      async systemOne() {
+        calls++;
+        throw new Error("inference must not run");
+      },
+    }), /流程尚未完成/);
+    assert.equal(calls, 0, ref);
+  }
+});
+
 test("validation rejects any unconnected choice output and cycle", () => {
   const disconnected = branchFlow();
   disconnected.edges = disconnected.edges.filter((edge) => edge.sourceHandle !== "choice:no");
@@ -394,4 +433,55 @@ test("test case parsing rejects invalid JSON values, non-object outputs, and dup
 
 test("stored workflow parser rejects malformed graph-node data", () => {
   assert.throws(() => parseDecisionStoreData({ flows: [{ id: "broken", nodes: [null], edges: [] }], templates: [] }));
+});
+
+test("partial batch saves merge atomically while full and changed-flow runs replace", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "laya-partial-batch-store-"));
+  try {
+    const store = await DecisionStore.open(path.join(directory, "flows.json"));
+    const flow = await store.createFlow("Partial batch");
+    const cases: FlowTestCase[] = ["first", "second"].map((id) => ({
+      id, name: id, input: id, expectedOutput: {}, enabled: true,
+    }));
+    const suite = await store.saveFlowTestCases(flow.id, "", cases);
+    const run = (caseId: string, revision = flowRevision(flow), status: "passed" | "failed" = "passed") => ({
+      ranAt: new Date(0).toISOString(),
+      flowRevision: revision,
+      results: [{ caseId, status, actualOutput: {}, durationMs: 1 }],
+    });
+    await Promise.all([
+      store.saveFlowTestRun(flow.id, suite.revision, run("second"), true),
+      store.saveFlowTestRun(flow.id, suite.revision, run("first"), true),
+    ]);
+    assert.deepEqual(store.getFlowTestSuite(flow.id).lastRun?.results.map((result) => result.caseId), ["first", "second"]);
+
+    await store.saveFlowTestRun(flow.id, suite.revision, run("first", flowRevision(flow), "failed"), true);
+    assert.deepEqual(store.getFlowTestSuite(flow.id).lastRun?.results.map((result) => [result.caseId, result.status]), [
+      ["first", "failed"], ["second", "passed"],
+    ]);
+
+    await store.saveFlowTestRun(flow.id, suite.revision, run("second"));
+    assert.deepEqual(store.getFlowTestSuite(flow.id).lastRun?.results.map((result) => result.caseId), ["second"]);
+    await store.saveFlowTestRun(flow.id, suite.revision, run("first"), true);
+    assert.equal(store.getFlowTestSuite(flow.id).lastRun?.results.length, 2);
+
+    const changedFlow = await store.saveFlow({
+      ...flow,
+      nodes: flow.nodes.map((node) => ({ ...node, data: { ...node.data, label: `${node.data.label} updated` } })),
+    });
+    const changedRevision = flowRevision(changedFlow);
+    assert.notEqual(changedRevision, flowRevision(flow));
+    await store.saveFlowTestRun(flow.id, suite.revision, run("second", changedRevision), true);
+    assert.equal(store.getFlowTestSuite(flow.id).lastRun?.flowRevision, changedRevision);
+    assert.deepEqual(store.getFlowTestSuite(flow.id).lastRun?.results.map((result) => result.caseId), ["second"]);
+    await store.saveFlowTestRun(flow.id, suite.revision, run("first"), true);
+    assert.equal(store.getFlowTestSuite(flow.id).lastRun?.flowRevision, flowRevision(flow));
+    assert.deepEqual(store.getFlowTestSuite(flow.id).lastRun?.results.map((result) => result.caseId), ["first"]);
+
+    await store.saveFlowTestCases(flow.id, suite.revision, [{ ...cases[0]!, name: "Edited case" }, cases[1]!]);
+    await assert.rejects(store.saveFlowTestRun(flow.id, suite.revision, run("second"), true), /已更新/);
+    assert.equal(store.getFlowTestSuite(flow.id).lastRun, null);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

@@ -54,6 +54,14 @@ function requiredText(value: unknown, field: string): string {
   return value.trim();
 }
 
+function decodePathParameter(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new HttpError(400, "路徑參數必須使用有效的 URL 編碼。");
+  }
+}
+
 function getFlowOrThrow(store: DecisionStore, id: string): DecisionFlow {
   const flow = store.getFlow(id);
   if (!flow) throw new HttpError(404, "找不到指定的流程。");
@@ -109,9 +117,14 @@ const laya = await Laya.load({
 console.log("\n[OK] 模型就緒。流程資料儲存於：", process.env.LAYA_DATA_DIR ?? path.join(APP_DIRECTORY, "data"));
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-  const pathname = url.pathname;
   try {
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://localhost");
+    } catch {
+      throw new HttpError(400, "請求路徑必須是有效的 URL。");
+    }
+    const pathname = url.pathname;
     if (pathname === "/health" && req.method === "GET") {
       respondJson(res, 200, { status: "ok", model: "alexdoandev/laya-multilingual-onnx", pr: 11 });
       return;
@@ -120,6 +133,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/system-one" && req.method === "POST") {
       const payload = await readJson(req);
       if (!isRecord(payload) || !Object.hasOwn(payload, "state") || !isRecord(payload.questions)) throw new HttpError(400, "請求必須包含 state 與 questions 欄位。");
+      if (Object.keys(payload.questions).length === 0) throw new HttpError(400, "questions 至少必須包含一個問題。");
       const questions: Record<string, Question> = {};
       try {
         for (const [key, question] of Object.entries(payload.questions)) questions[key] = parseQuestionDefinition(question);
@@ -153,6 +167,7 @@ const server = http.createServer(async (req, res) => {
       try {
         respondJson(res, 201, await store.createTemplate(await readJson(req)));
       } catch (error) {
+        if (error instanceof HttpError) throw error;
         throw new HttpError(400, error instanceof Error ? error.message : String(error));
       }
       return;
@@ -160,7 +175,7 @@ const server = http.createServer(async (req, res) => {
 
     const testCasesMatch = pathname.match(/^\/api\/flows\/([^/]+)\/test-cases(?:\/(run))?$/);
     if (testCasesMatch) {
-      const id = decodeURIComponent(testCasesMatch[1] ?? "");
+      const id = decodePathParameter(testCasesMatch[1] ?? "");
       const action = testCasesMatch[2];
       getFlowOrThrow(store, id);
       if (!action && req.method === "GET") {
@@ -202,15 +217,8 @@ const server = http.createServer(async (req, res) => {
         } catch (error) {
           throw new HttpError(400, error instanceof Error ? error.message : String(error));
         }
-        if (selectedCaseIds && suite.lastRun?.flowRevision === run.flowRevision) {
-          const resultsById = new Map([...suite.lastRun.results, ...run.results].map((result) => [result.caseId, result]));
-          run = { ...run, results: suite.cases.flatMap((testCase) => {
-            const result = resultsById.get(testCase.id);
-            return result ? [result] : [];
-          }) };
-        }
         try {
-          respondJson(res, 200, await store.saveFlowTestRun(id, suite.revision, run));
+          respondJson(res, 200, await store.saveFlowTestRun(id, suite.revision, run, selectedCaseIds !== undefined));
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           throw new HttpError(message.startsWith("測試案例已更新") ? 409 : 400, message);
@@ -222,7 +230,7 @@ const server = http.createServer(async (req, res) => {
 
     const flowMatch = pathname.match(/^\/api\/flows\/([^/]+)(?:\/(validate|test|run))?$/);
     if (flowMatch) {
-      const id = decodeURIComponent(flowMatch[1] ?? "");
+      const id = decodePathParameter(flowMatch[1] ?? "");
       const action = flowMatch[2];
       if (action === "validate" && req.method === "POST") {
         respondJson(res, 200, { issues: validateFlow(getFlowOrThrow(store, id)) });
@@ -281,8 +289,9 @@ const server = http.createServer(async (req, res) => {
     const templateMatch = pathname.match(/^\/api\/templates\/([^/]+)$/);
     if (templateMatch && req.method === "DELETE") {
       try {
-        await store.deleteTemplate(decodeURIComponent(templateMatch[1] ?? ""));
+        await store.deleteTemplate(decodePathParameter(templateMatch[1] ?? ""));
       } catch (error) {
+        if (error instanceof HttpError) throw error;
         throw new HttpError(404, error instanceof Error ? error.message : String(error));
       }
       res.writeHead(204);
@@ -295,6 +304,10 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     if (res.headersSent) {
       res.destroy();
+      return;
+    }
+    if (error instanceof Error && error.message.includes("options do not fit in head_max_len=")) {
+      respondJson(res, 400, { error: error.message });
       return;
     }
     if (error instanceof DecisionFlowError) {

@@ -164,7 +164,7 @@ export class DecisionStore {
     });
   }
 
-  async saveFlowTestRun(flowId: string, expectedRevision: string, value: unknown): Promise<FlowTestSuite> {
+  async saveFlowTestRun(flowId: string, expectedRevision: string, value: unknown, partial = false): Promise<FlowTestSuite> {
     const lastRun: FlowTestRun = parseFlowTestRun(value);
     return this.mutate((data) => {
       if (!data.flows.some((flow) => flow.id === flowId)) throw new Error("找不到指定的流程。");
@@ -172,7 +172,15 @@ export class DecisionStore {
       const suite = index < 0 ? { flowId, revision: "", cases: [], lastRun: null } : data.flowTestSuites[index];
       if (!suite || suite.revision !== expectedRevision) throw new Error("測試案例已更新；請重新執行批次測試。");
       if (lastRun.results.some((result) => !suite.cases.some((testCase) => testCase.id === result.caseId))) throw new Error("批次測試結果包含不存在的案例。");
-      const updated = { ...suite, lastRun };
+      let mergedRun = lastRun;
+      if (partial && suite.lastRun?.flowRevision === lastRun.flowRevision) {
+        const resultsById = new Map([...suite.lastRun.results, ...lastRun.results].map((result) => [result.caseId, result]));
+        mergedRun = { ...lastRun, results: suite.cases.flatMap((testCase) => {
+          const result = resultsById.get(testCase.id);
+          return result ? [result] : [];
+        }) };
+      }
+      const updated = { ...suite, lastRun: mergedRun };
       if (index < 0) data.flowTestSuites.push(updated);
       else data.flowTestSuites[index] = updated;
       return structuredClone(updated);

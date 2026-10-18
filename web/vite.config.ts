@@ -8,6 +8,7 @@ const apiPort = Number(process.env.API_PORT ?? 3000);
 export default defineConfig({
   plugins: [react()],
   root: fileURLToPath(new URL(".", import.meta.url)),
+  define: { "import.meta.env.VITE_API_PORT": JSON.stringify(String(apiPort)) },
   server: {
     fs: { allow: [workspaceDirectory] },
     proxy: {

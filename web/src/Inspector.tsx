@@ -46,9 +46,24 @@ function withLabel(node: FlowNode, label: string): FlowNode {
   return { ...node, data: { ...node.data, label } };
 }
 
-function referenceLabel(value: EndFlowNode["data"]["fields"][number]["value"], ancestors: DecisionFlowNode[]): string {
-  if (value.kind === "literal") return "上游決策";
-  return ancestors.find((ancestor) => ancestor.id === value.nodeId)?.data.label ?? "上游決策";
+function referenceProblem(flow: DecisionFlow, nodeId: string, ancestors: DecisionFlowNode[]): string | null {
+  const referenced = flow.nodes.find((candidate) => candidate.id === nodeId);
+  if (!referenced) return `找不到節點：${nodeId}`;
+  if (referenced.type !== "decision") return `不是決策節點：${referenced.data.label || nodeId}`;
+  if (!ancestors.some((ancestor) => ancestor.id === nodeId)) return `不在上游路徑：${referenced.data.label || nodeId}`;
+  return null;
+}
+
+function parseScoreThresholds(raw: string, max: number): { thresholds: number[]; error: string } {
+  if (raw.trim() === "") return { thresholds: [], error: "" };
+  const parts = raw.split(",").map((part) => part.trim());
+  if (parts.some((part) => part.length === 0)) return { thresholds: [], error: "每個逗號之間都必須填入數值，不可留空。" };
+  const thresholds = parts.map(Number);
+  if (thresholds.some((threshold) => !Number.isFinite(threshold))) return { thresholds, error: "切分點必須是有限數值。" };
+  if (thresholds.some((threshold, index) => threshold <= 0 || threshold >= max || (index > 0 && threshold <= thresholds[index - 1]!))) {
+    return { thresholds, error: `切分點需嚴格遞增，且介於 0 與 ${max} 之間（不含端點）。` };
+  }
+  return { thresholds, error: "" };
 }
 
 export function Inspector({ flow, node, templates, onChangeFlow, onDeleteNode, onCreateTemplate, onValidityChange }: InspectorProps) {
@@ -58,8 +73,17 @@ export function Inspector({ flow, node, templates, onChangeFlow, onDeleteNode, o
   const [jsonDrafts, setJsonDrafts] = useState<Record<string, string>>({});
   const [jsonErrors, setJsonErrors] = useState<Record<string, string>>({});
   const [scoreDrafts, setScoreDrafts] = useState<Record<string, string>>({});
+  const [draftNodeId, setDraftNodeId] = useState(node?.id);
+  const draftsCurrent = draftNodeId === node?.id;
+  const scoreNode = node?.type === "decision" && node.data.question.type === "score" ? node : null;
+  const appliedScoreText = scoreNode?.data.scoreThresholds.join(", ") ?? "";
+  const scoreDraft = scoreNode && draftsCurrent ? scoreDrafts[scoreNode.id] ?? appliedScoreText : appliedScoreText;
+  const scoreDraftPending = scoreDraft !== appliedScoreText;
+  const scoreValidation = parseScoreThresholds(scoreDraft, scoreNode?.data.question.type === "score" ? scoreNode.data.question.criteria.length - 1 : 0);
+  const scoreError = scoreNode ? scoreValidation.error : "";
 
   useEffect(() => {
+    setDraftNodeId(node?.id);
     setTemplateName(node?.type === "decision" ? `${node.data.label || "決策"} 範本`.slice(0, 120) : "");
     setTemplateError("");
     setJsonErrors({});
@@ -68,8 +92,8 @@ export function Inspector({ flow, node, templates, onChangeFlow, onDeleteNode, o
   }, [node?.id]);
 
   useEffect(() => {
-    onValidityChange(Object.values(jsonErrors).every((error) => error.length === 0));
-  }, [jsonErrors, onValidityChange]);
+    onValidityChange((!draftsCurrent || Object.values(jsonErrors).every((error) => error.length === 0)) && !scoreDraftPending && !scoreError);
+  }, [draftsCurrent, jsonErrors, scoreDraftPending, scoreError, onValidityChange]);
 
   function commitNode(updated: FlowNode, portRenames = new Map<string, string>()): void {
     let nextNode = updated;
@@ -117,7 +141,7 @@ export function Inspector({ flow, node, templates, onChangeFlow, onDeleteNode, o
               <select value={question.type} onChange={(event) => {
                 const type = event.target.value === "noul" || event.target.value === "score" ? event.target.value : "choice";
                 const nextQuestion = makeQuestion(type, getText(question));
-                setScoreDrafts((current) => ({ ...current, [decisionNode.id]: "" }));
+                setScoreDrafts({});
                 commitDecision({ ...decisionNode, data: { ...decisionNode.data, question: nextQuestion, scoreThresholds: [] } });
               }}>
                 <option value="choice">單選分類</option><option value="noul">是／否（機率門檻）</option><option value="score">程度評分</option>
@@ -169,20 +193,30 @@ export function Inspector({ flow, node, templates, onChangeFlow, onDeleteNode, o
                   {question.criteria.map((level, index) => <div className="option-row" key={`${decisionNode.id}-level-${index}`}><label className="field"><span>分數 {index}</span><input value={level} onChange={(event) => {
                     const criteria = [...question.criteria];
                     criteria[index] = event.target.value;
-                    commitDecision({ ...decisionNode, data: { ...decisionNode.data, question: { ...question, criteria }, scoreThresholds: decisionNode.data.scoreThresholds.filter((threshold) => threshold < criteria.length - 1) } });
+                    commitDecision({ ...decisionNode, data: { ...decisionNode.data, question: { ...question, criteria } } });
                   }} /></label><button type="button" className="icon-button danger" aria-label={`刪除分數等級 ${index}`} onClick={() => {
                     const criteria = question.criteria.filter((_item, levelIndex) => levelIndex !== index);
+                    setScoreDrafts({});
                     commitDecision({ ...decisionNode, data: { ...decisionNode.data, question: { ...question, criteria }, scoreThresholds: decisionNode.data.scoreThresholds.filter((threshold) => threshold < criteria.length - 1) } });
                   }}>×</button></div>)}
-                  <button type="button" className="button button--subtle button--small" onClick={() => commitDecision({ ...decisionNode, data: { ...decisionNode.data, question: { ...question, criteria: [...question.criteria, `新等級 ${question.criteria.length}`] } } })}>＋ 新增等級</button>
+                  <button type="button" className="button button--subtle button--small" onClick={() => {
+                    setScoreDrafts({});
+                    commitDecision({ ...decisionNode, data: { ...decisionNode.data, question: { ...question, criteria: [...question.criteria, `新等級 ${question.criteria.length}`] } } });
+                  }}>＋ 新增等級</button>
                 </fieldset>
-                <label className="field"><span>數值切分點</span><input aria-label="數值切分點，以逗號分隔" placeholder="例如：1.5" value={scoreDrafts[decisionNode.id] ?? decisionNode.data.scoreThresholds.join(", ")} onChange={(event) => {
-                  const raw = event.target.value;
-                  setScoreDrafts((current) => ({ ...current, [decisionNode.id]: raw }));
-                  const thresholds = raw.split(",").map((part) => part.trim()).filter((part) => part.length > 0).map(Number);
-                  commitDecision({ ...decisionNode, data: { ...decisionNode.data, scoreThresholds: thresholds } });
+                <label className="field"><span>數值切分點</span><input aria-label="數值切分點，以逗號分隔" aria-invalid={Boolean(scoreError)} placeholder="例如：1.5" value={scoreDraft} onChange={(event) => {
+                  setScoreDrafts((current) => ({ ...current, [decisionNode.id]: event.target.value }));
                 }} /></label>
-                <p className="helper-copy">切分點 1.5：低於 1.5 與大於等於 1.5 分流。每段都要接線。</p>
+                <div className="option-row">
+                  <button type="button" className="button button--subtle button--small" disabled={!scoreDraftPending || Boolean(scoreError)} onClick={() => {
+                    setScoreDrafts({});
+                    commitDecision({ ...decisionNode, data: { ...decisionNode.data, scoreThresholds: scoreValidation.thresholds } });
+                  }}>套用切分點</button>
+                  <button type="button" className="button button--subtle button--small" disabled={!scoreDraftPending} onClick={() => setScoreDrafts({})}>取消修改</button>
+                </div>
+                {scoreError && <p className="form-error" role="alert">{scoreError}</p>}
+                {scoreDraftPending && <p className="helper-copy">切分點尚未套用；請套用或取消修改後再儲存或測試流程。</p>}
+                <p className="helper-copy">切分點 1.5：低於 1.5 與大於等於 1.5 分流。每段都要接線。留空表示不切分；套用後，已移除出口的連線也會刪除。切換節點或調整等級數量會取消未套用的修改。</p>
               </>
             )}
             <fieldset className="field-group"><legend>提供前置決策結果（可選）</legend>
@@ -192,10 +226,15 @@ export function Inspector({ flow, node, templates, onChangeFlow, onDeleteNode, o
                   commitDecision({ ...decisionNode, data: { ...decisionNode.data, inputNodeIds } });
                 }} /><span>{ancestor.data.label}</span></label>
               ))}
+              {[...new Set(decisionNode.data.inputNodeIds)].filter((id) => !ancestors.some((ancestor) => ancestor.id === id)).map((id) => (
+                <label className="check-row" key={id}><input type="checkbox" checked onChange={() => {
+                  commitDecision({ ...decisionNode, data: { ...decisionNode.data, inputNodeIds: decisionNode.data.inputNodeIds.filter((candidate) => candidate !== id) } });
+                }} /><span>無效引用（{referenceProblem(flow, id, ancestors)}）</span></label>
+              ))}
             </fieldset>
             <fieldset className="field-group"><legend>存成可重用積木</legend>
               <label className="field"><span>範本名稱</span><input value={templateName} maxLength={120} onChange={(event) => setTemplateName(event.target.value)} /></label>
-              <button type="button" className="button button--subtle" disabled={savingTemplate || templateName.trim().length === 0 || templates.some((template) => template.name === templateName.trim())} onClick={async () => {
+              <button type="button" className="button button--subtle" disabled={savingTemplate || scoreDraftPending || Boolean(scoreError) || templateName.trim().length === 0 || templates.some((template) => template.name === templateName.trim())} onClick={async () => {
                 setSavingTemplate(true);
                 setTemplateError("");
                 try {
@@ -220,12 +259,12 @@ export function Inspector({ flow, node, templates, onChangeFlow, onDeleteNode, o
                   commitNode({ ...endNode, data: { ...endNode.data, fields: endNode.data.fields.filter((candidate) => candidate.id !== field.id) } });
                 }}>×</button></div>
                 <label className="field"><span>JSON key</span><input value={field.key} onChange={(event) => updateEndField(endNode, field.id, { ...field, key: event.target.value }, flow, onChangeFlow)} /></label>
-                <label className="field"><span>值來源</span><select value={field.value.kind === "literal" ? "literal" : field.value.nodeId} onChange={(event) => {
-                  const value: OutputValue = event.target.value === "literal" ? { kind: "literal", value: null } : { kind: "decision", nodeId: event.target.value };
+                <label className="field"><span>值來源</span><select value={field.value.kind === "literal" ? "literal" : `decision:${field.value.nodeId}`} onChange={(event) => {
+                  const value: OutputValue = event.target.value === "literal" ? { kind: "literal", value: null } : { kind: "decision", nodeId: event.target.value.slice("decision:".length) };
                   setJsonErrors((current) => ({ ...current, [field.id]: "" }));
-                  setJsonDrafts((current) => ({ ...current, [field.id]: "" }));
+                  setJsonDrafts((current) => ({ ...current, [field.id]: value.kind === "literal" ? JSON.stringify(value.value, null, 2) : "" }));
                   updateEndField(endNode, field.id, { ...field, value }, flow, onChangeFlow);
-                }}><option value="literal">固定 JSON 值</option>{canReference.map((ancestor) => <option value={ancestor.id} key={ancestor.id}>決策結果：{ancestor.data.label}</option>)}</select></label>
+                }}><option value="literal">固定 JSON 值</option>{field.value.kind === "decision" && referenceProblem(flow, field.value.nodeId, canReference) && <option value={`decision:${field.value.nodeId}`}>無效引用（{referenceProblem(flow, field.value.nodeId, canReference)}）</option>}{canReference.map((ancestor) => <option value={`decision:${ancestor.id}`} key={ancestor.id}>決策結果：{ancestor.data.label}</option>)}</select></label>
                 {field.value.kind === "literal" ? <label className="field"><span>JSON 值</span><textarea aria-label={`欄位 ${field.key} JSON 值`} rows={3} value={jsonDrafts[field.id] ?? JSON.stringify(field.value.value, null, 2)} onChange={(event) => {
                   setJsonDrafts((current) => ({ ...current, [field.id]: event.target.value }));
                   try {
@@ -236,7 +275,7 @@ export function Inspector({ flow, node, templates, onChangeFlow, onDeleteNode, o
                   } catch (error) {
                     setJsonErrors((current) => ({ ...current, [field.id]: error instanceof Error ? error.message : "JSON 格式錯誤。" }));
                   }
-                }} /></label> : <p className="helper-copy">執行時會填入「{referenceLabel(field.value, canReference)}」的選擇／分數／是非結果。</p>}
+                }} /></label> : referenceProblem(flow, field.value.nodeId, canReference) ? <p className="form-error" role="alert">無效引用（{referenceProblem(flow, field.value.nodeId, canReference)}）。請選擇固定 JSON 值或有效的上游決策。</p> : <p className="helper-copy">執行時會填入「{canReference.find((ancestor) => field.value.kind === "decision" && ancestor.id === field.value.nodeId)?.data.label || field.value.nodeId}」的選擇／分數／是非結果。</p>}
                 {jsonErrors[field.id] && <p className="form-error" role="alert">{jsonErrors[field.id]}</p>}
               </div>
             ))}

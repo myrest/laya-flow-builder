@@ -21,6 +21,7 @@ import { getBranchPorts } from "../../decision-engine";
 import type { DecisionFlow, FlowEdge, FlowNode } from "../../decision-types";
 import { isRecord } from "../../decision-guards";
 import { createId } from "./id";
+import { removeFlowNodes } from "./flow-editing";
 
 const BLOCK_TRANSFER_KEY = "application/laya-decision-block";
 type CanvasNodeData = { flowNode: FlowNode };
@@ -149,14 +150,12 @@ export function FlowCanvas({ flow, selectedNodeId, onSelectNode, onChange, onAdd
     const updated = applyNodeChanges<CanvasNode>(contentChanges, toCanvasNodes(current.nodes, selectedNodeId));
     const removedNodeIds = new Set<string>();
     for (const change of contentChanges) if (change.type === "remove") removedNodeIds.add(change.id);
-    const nextEdges = removedNodeIds.size === 0
-      ? current.edges
-      : current.edges.filter((edge) => !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target));
+    const next = removeFlowNodes({ ...current, nodes: fromCanvasNodes(updated) }, removedNodeIds);
     if (removedNodeIds.size > 0) {
-      const remainingIds = new Set(nextEdges.map((edge) => edge.id));
+      const remainingIds = new Set(next.edges.map((edge) => edge.id));
       setSelectedEdgeIds((currentIds) => new Set([...currentIds].filter((id) => remainingIds.has(id))));
     }
-    commitFlow({ ...current, nodes: fromCanvasNodes(updated), edges: nextEdges });
+    commitFlow(next);
   }, [commitFlow, selectedNodeId]);
 
   const handleEdgesChange = useCallback((changes: EdgeChange<CanvasEdge>[]) => {
