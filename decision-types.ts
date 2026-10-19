@@ -105,10 +105,63 @@ export interface FlowTestSuite {
   lastRun: FlowTestRun | null;
 }
 
+export interface FlowDraftRun {
+  draftRevision: string;
+  baseline: FlowTestRun | null;
+  candidate: FlowTestRun;
+  traces: Record<string, FlowTestResult>;
+  baselineTraces: Record<string, FlowTestResult>;
+}
+
+export interface FlowDraft {
+  id: string;
+  name: string;
+  sourceFlowId: string | null;
+  baseFlow: DecisionFlow | null;
+  baseSuite: FlowTestSuite | null;
+  baseFlowVersion: string | null;
+  revision: string;
+  status: "draft" | "review" | "applied" | "discarded";
+  createdAt: string;
+  updatedAt: string;
+  flow: DecisionFlow;
+  cases: FlowTestCase[];
+  lastRun: FlowDraftRun | null;
+}
+
+export interface FlowHistoryEntry {
+  id: string;
+  flowId: string;
+  createdAt: string;
+  reason: string;
+  flow: DecisionFlow;
+  suite: FlowTestSuite;
+}
+
+export interface FlowDraftChange {
+  path: string;
+  before?: unknown;
+  after?: unknown;
+}
+
+export interface FlowDraftPreview {
+  draft: FlowDraft;
+  currentFlow: DecisionFlow | null;
+  currentSuite: FlowTestSuite | null;
+  currentFlowVersion: string | null;
+  conflict: boolean;
+  issues: string[];
+  changes: FlowDraftChange[];
+  caseChanges: FlowDraftChange[];
+  warnings: string[];
+}
+
 export interface DecisionStoreData {
   flows: DecisionFlow[];
   templates: DecisionTemplate[];
   flowTestSuites: FlowTestSuite[];
+  flowDrafts: FlowDraft[];
+  flowHistory: FlowHistoryEntry[];
 }
 export interface BranchPort {
   id: string;

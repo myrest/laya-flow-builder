@@ -1,5 +1,5 @@
 import type { Answer, Question } from "../laya/src/types.js";
-import type { DecisionFlow, DecisionNodeTrace, DecisionStoreData, DecisionTemplate, EndFlowNode, FlowEdge, FlowNode, FlowTestCase, FlowTestCaseResult, FlowTestRun, FlowTestSuite, FlowTestResult, JsonValue } from "./decision-types.js";
+import type { DecisionFlow, DecisionNodeTrace, DecisionStoreData, DecisionTemplate, EndFlowNode, FlowEdge, FlowNode, FlowTestCase, FlowTestCaseResult, FlowTestRun, FlowTestSuite, FlowTestResult, FlowDraft, FlowDraftRun, FlowHistoryEntry, JsonValue } from "./decision-types.js";
 import { DEFAULT_MIN_CONFIDENCE, MAX_FLOW_TEST_CASES, MAX_FLOW_TEST_NAME_LENGTH } from "./decision-types.js";
 import { getDefaultLowConfidenceBranch } from "./decision-engine.js";
 import { isRecord } from "./decision-guards.js";
@@ -210,16 +210,83 @@ export function parseFlowTestSuite(value: unknown): FlowTestSuite {
   return { flowId: value.flowId, revision: value.revision, cases, lastRun };
 }
 
+export function parseFlowDraft(value: unknown): FlowDraft {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id || typeof value.name !== "string" ||
+    (value.sourceFlowId !== null && typeof value.sourceFlowId !== "string") ||
+    (value.baseFlowVersion !== null && typeof value.baseFlowVersion !== "string") ||
+    typeof value.revision !== "string" || !value.revision ||
+    (value.status !== "draft" && value.status !== "review" && value.status !== "applied" && value.status !== "discarded") ||
+    typeof value.createdAt !== "string" || typeof value.updatedAt !== "string") fail("flowDraft");
+  const baseFlow = value.baseFlow === null ? null : parseDecisionFlow(value.baseFlow);
+  const baseSuite = value.baseSuite === null ? null : parseFlowTestSuite(value.baseSuite);
+  const flow = parseDecisionFlow(value.flow);
+  const cases = parseFlowTestCases(value.cases);
+  if (flow.id !== value.id) fail("flowDraft.flow.id");
+  if (value.sourceFlowId === null) {
+    if (baseFlow !== null || baseSuite !== null || value.baseFlowVersion !== null) fail("flowDraft.baseline");
+  } else if (baseFlow === null || baseSuite === null || value.baseFlowVersion === null) {
+    fail("flowDraft.baseline");
+  }
+  if (baseFlow && baseFlow.id !== value.sourceFlowId) fail("flowDraft.baseFlow.id");
+  if (baseSuite && baseSuite.flowId !== value.sourceFlowId) fail("flowDraft.baseSuite.flowId");
+  let lastRun: FlowDraftRun | null = null;
+  if (value.lastRun !== null) {
+    if (!isRecord(value.lastRun) || typeof value.lastRun.draftRevision !== "string" ||
+      !isRecord(value.lastRun.traces) || !isRecord(value.lastRun.baselineTraces)) fail("flowDraft.lastRun");
+    const candidate = parseFlowTestRun(value.lastRun.candidate);
+    const baseline = value.lastRun.baseline === null ? null : parseFlowTestRun(value.lastRun.baseline);
+    if (candidate.results.some((result) => !cases.some((testCase) => testCase.id === result.caseId))) fail("flowDraft.lastRun.candidate");
+    if (baseline && baseline.results.some((result) => !baseSuite?.cases.some((testCase) => testCase.id === result.caseId))) fail("flowDraft.lastRun.baseline");
+    const parseTraces = (raw: Record<string, unknown>, validIds: Set<string>, path: string): Record<string, FlowTestResult> => {
+      const traces: Record<string, FlowTestResult> = {};
+      for (const [caseId, trace] of Object.entries(raw)) {
+        if (!validIds.has(caseId)) fail(`${path}.${caseId}`);
+        traces[caseId] = parseFlowTestResult(trace);
+      }
+      return traces;
+    };
+    lastRun = {
+      draftRevision: value.lastRun.draftRevision,
+      baseline,
+      candidate,
+      traces: parseTraces(value.lastRun.traces, new Set(cases.map((testCase) => testCase.id)), "flowDraft.lastRun.traces"),
+      baselineTraces: parseTraces(value.lastRun.baselineTraces, new Set(baseSuite?.cases.map((testCase) => testCase.id) ?? []), "flowDraft.lastRun.baselineTraces"),
+    };
+  }
+  return {
+    id: value.id, name: value.name, sourceFlowId: value.sourceFlowId, baseFlow, baseSuite,
+    baseFlowVersion: value.baseFlowVersion, revision: value.revision, status: value.status,
+    createdAt: value.createdAt, updatedAt: value.updatedAt, flow, cases, lastRun,
+  };
+}
+
+export function parseFlowHistoryEntry(value: unknown): FlowHistoryEntry {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id || typeof value.flowId !== "string" || !value.flowId ||
+    typeof value.createdAt !== "string" || typeof value.reason !== "string") fail("flowHistory");
+  const flow = parseDecisionFlow(value.flow);
+  const suite = parseFlowTestSuite(value.suite);
+  if (flow.id !== value.flowId || suite.flowId !== value.flowId) fail("flowHistory.references");
+  return { id: value.id, flowId: value.flowId, createdAt: value.createdAt, reason: value.reason, flow, suite };
+}
+
 export function parseDecisionStoreData(value: unknown): DecisionStoreData {
   if (!isRecord(value) || !Array.isArray(value.flows) || !Array.isArray(value.templates)) fail("store");
   const flows = value.flows.map(parseDecisionFlow);
   const templates = value.templates.map(parseTemplate);
   const rawSuites = value.flowTestSuites === undefined ? [] : value.flowTestSuites;
+  const rawDrafts = value.flowDrafts === undefined ? [] : value.flowDrafts;
+  const rawHistory = value.flowHistory === undefined ? [] : value.flowHistory;
   if (!Array.isArray(rawSuites)) fail("flowTestSuites");
+  if (!Array.isArray(rawDrafts)) fail("flowDrafts");
+  if (!Array.isArray(rawHistory)) fail("flowHistory");
   const flowTestSuites = rawSuites.map(parseFlowTestSuite);
+  const flowDrafts = rawDrafts.map(parseFlowDraft);
+  const flowHistory = rawHistory.map(parseFlowHistoryEntry);
   const flowIds = new Set(flows.map((flow) => flow.id));
   if (new Set(flowTestSuites.map((suite) => suite.flowId)).size !== flowTestSuites.length || flowTestSuites.some((suite) => !flowIds.has(suite.flowId))) fail("flowTestSuites.flowId");
-  return { flows, templates, flowTestSuites };
+  if (new Set(flowDrafts.map((draft) => draft.id)).size !== flowDrafts.length) fail("flowDrafts.id");
+  if (new Set(flowHistory.map((entry) => entry.id)).size !== flowHistory.length) fail("flowHistory.id");
+  return { flows, templates, flowTestSuites, flowDrafts, flowHistory };
 }
 
 export function parseJsonObject(value: unknown): Record<string, JsonValue> {

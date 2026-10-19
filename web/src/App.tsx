@@ -1,20 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { getDefaultLowConfidenceBranch, validateFlow } from "../../decision-engine";
-import type { DecisionFlow, DecisionFlowNode, DecisionTemplate, FlowNode, FlowTestResult } from "../../decision-types";
+import type { DecisionFlow, DecisionFlowNode, DecisionTemplate, FlowNode, FlowTestResult, FlowTestSuite } from "../../decision-types";
 import { DEFAULT_MIN_CONFIDENCE } from "../../decision-types";
 import {
+  checkAdminToken,
   choiceQuestion,
+  clearAdminToken,
   createFlow,
   createTemplate,
   deleteFlow,
   deleteTemplate,
+  getAdminToken,
   listFlows,
   listTemplates,
   saveFlow,
+  setAdminToken,
   testFlow,
   validateFlow as validateSavedFlow,
 } from "./api";
+import { FlowDraftPanel } from "./FlowDraftPanel";
 import { createId } from "./id";
 import { FlowCanvas, beginBlockDrag } from "./FlowCanvas";
 import { Inspector } from "./Inspector";
@@ -135,6 +140,13 @@ function AppContent() {
   const [inspectorValid, setInspectorValid] = useState(true);
   const [caseDraftDirty, setCaseDraftDirty] = useState(false);
   const [savingCases, setSavingCases] = useState(false);
+  const [adminToken, setAdminTokenState] = useState(() => getAdminToken() !== null);
+  const [loginToken, setLoginToken] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [batchMount, setBatchMount] = useState(0);
+  const [publishedSuite, setPublishedSuite] = useState<FlowTestSuite | null>(null);
+  const publicationInFlight = useRef(false);
   const apiUrl = useMemo(() => {
     const url = new URL(window.location.origin);
     if (import.meta.env.DEV) url.port = import.meta.env.VITE_API_PORT;
@@ -151,6 +163,49 @@ function AppContent() {
     setResult(null);
     setTestError("");
   }, []);
+
+  const loginAdmin = async () => {
+    if (!loginToken || authBusy) return;
+    setAuthBusy(true); setAuthError("");
+    try {
+      await checkAdminToken(loginToken);
+      setAdminToken(loginToken);
+      setAdminTokenState(true);
+      setLoginToken("");
+    } catch (error) { setAuthError(error instanceof Error ? error.message : String(error)); }
+    finally { setAuthBusy(false); }
+  };
+
+  const logoutAdmin = () => {
+    clearAdminToken();
+    setAdminTokenState(false);
+    setAuthError("");
+  };
+
+  const handleDraftPublish = async (operation: () => Promise<{ flow: DecisionFlow; suite: FlowTestSuite }>): Promise<void> => {
+    if (publicationInFlight.current) throw new Error("正式流程更新正在進行中。");
+    publicationInFlight.current = true;
+    setFlowTransitioning(true);
+    setPageError("");
+    try {
+      const { flow: publishedFlow, suite } = await operation();
+      setFlows((current) => current.some((candidate) => candidate.id === publishedFlow.id)
+        ? current.map((candidate) => candidate.id === publishedFlow.id ? publishedFlow : candidate)
+        : [...current, publishedFlow]);
+      setCurrentFlow(publishedFlow);
+      setPublishedSuite(suite);
+      setDirty(false);
+      setCaseDraftDirty(false);
+      setIssues(validateFlow(publishedFlow));
+      setSelectedNodeId(null);
+      setInspectorValid(true);
+      clearTest();
+      setBatchMount((value) => value + 1);
+    } finally {
+      publicationInFlight.current = false;
+      setFlowTransitioning(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -174,6 +229,7 @@ function AppContent() {
   }, [setCurrentFlow]);
 
   const onChangeFlow = useCallback((updated: DecisionFlow) => {
+    if (publicationInFlight.current) return;
     setCurrentFlow(updated);
     setDirty(true);
     setIssues(validateFlow(updated));
@@ -183,7 +239,7 @@ function AppContent() {
   const selectedNode = flowTransitioning ? null : flow?.nodes.find((node) => node.id === selectedNodeId) ?? null;
 
   async function selectFlow(id: string): Promise<void> {
-    if (flow?.id === id || loading || saving || savingCases || flowTransitioning) return;
+    if (flow?.id === id || loading || saving || savingCases || flowTransitioning || publicationInFlight.current) return;
     if ((dirty || caseDraftDirty) && !window.confirm("目前有尚未儲存的流程或測試案例變更；捨棄並切換流程？")) return;
     clearTest();
     setLoading(true);
@@ -197,6 +253,7 @@ function AppContent() {
         return candidate;
       }), validateSavedFlow(id)]);
       setCurrentFlow(next);
+      setPublishedSuite(null);
       setIssues(validation.issues);
       setCaseDraftDirty(false);
       setDirty(false);
@@ -209,7 +266,7 @@ function AppContent() {
   }
 
   async function handleCreateFlow(): Promise<void> {
-    if (newFlowName.trim().length === 0 || loading || saving || savingCases || flowTransitioning) return;
+    if (newFlowName.trim().length === 0 || loading || saving || savingCases || flowTransitioning || publicationInFlight.current) return;
     if ((dirty || caseDraftDirty) && !window.confirm("目前有尚未儲存的流程或測試案例變更；捨棄並建立新流程？")) return;
     clearTest();
     setFlowTransitioning(true);
@@ -220,6 +277,7 @@ function AppContent() {
       const created = await createFlow(newFlowName.trim());
       setFlows((current) => [...current, created]);
       setCurrentFlow(created);
+      setPublishedSuite(null);
       setNewFlowName("");
       setSelectedNodeId(null);
       setInspectorValid(true);
@@ -235,7 +293,7 @@ function AppContent() {
   }
 
   async function handleSave(): Promise<void> {
-    if (!flow || !inspectorValid || loading || saving || savingCases) return;
+    if (!flow || !inspectorValid || loading || saving || savingCases || flowTransitioning || publicationInFlight.current) return;
     const snapshot = flow;
     const revision = viewRevision.current;
     setSaving(true);
@@ -256,7 +314,7 @@ function AppContent() {
   }
 
   async function handleDeleteFlow(): Promise<void> {
-    if (!flow || flows.length < 2 || loading || saving || savingCases || flowTransitioning || !window.confirm(`確定刪除「${flow.name}」及其測試案例？此動作無法復原。`)) return;
+    if (!flow || flows.length < 2 || loading || saving || savingCases || flowTransitioning || publicationInFlight.current || !window.confirm(`確定刪除「${flow.name}」及其測試案例？此動作無法復原。`)) return;
     clearTest();
     setFlowTransitioning(true);
     setSelectedNodeId(null);
@@ -268,6 +326,7 @@ function AppContent() {
       setFlows(remaining);
       const next = remaining[0] ?? null;
       setCurrentFlow(next);
+      setPublishedSuite(null);
       setCaseDraftDirty(false);
       setDirty(false);
       setSelectedNodeId(null);
@@ -282,7 +341,7 @@ function AppContent() {
   }
 
   function handleAddAt(type: BlockType, position: { x: number; y: number }): void {
-    if (!flow || loading || flowTransitioning) return;
+    if (!flow || loading || flowTransitioning || publicationInFlight.current) return;
     const node = createNode(type, position, templates);
     if (!node) return;
     const next = { ...flow, nodes: [...flow.nodes, node] };
@@ -291,19 +350,20 @@ function AppContent() {
   }
 
   function handleDeleteNode(nodeId: string): void {
-    if (!flow) return;
+    if (!flow || flowTransitioning || publicationInFlight.current) return;
     const updated = removeFlowNodes(flow, new Set([nodeId]));
     onChangeFlow(updated);
     setSelectedNodeId(null);
   }
 
   async function handleCreateTemplate(template: DecisionTemplate): Promise<void> {
+    if (publicationInFlight.current) return;
     const saved = await createTemplate(template);
     setTemplates((current) => [...current, saved]);
   }
 
   async function handleDeleteTemplate(id: string): Promise<void> {
-    if (!window.confirm("刪除此積木範本？已放入流程的節點不受影響。")) return;
+    if (publicationInFlight.current || flowTransitioning || !window.confirm("刪除此積木範本？已放入流程的節點不受影響。")) return;
     try {
       await deleteTemplate(id);
       setTemplates((current) => current.filter((template) => template.id !== id));
@@ -313,7 +373,7 @@ function AppContent() {
   }
 
   async function handleTest(): Promise<void> {
-    if (!flow || loading || saving || testing || issues.length > 0 || !inspectorValid) return;
+    if (!flow || loading || saving || testing || flowTransitioning || publicationInFlight.current || issues.length > 0 || !inspectorValid) return;
     const snapshot = flow;
     const revision = viewRevision.current;
     setTesting(true);
@@ -344,7 +404,7 @@ function AppContent() {
     }
   }
 
-  const readyToRun = Boolean(flow) && !loading && !saving && issues.length === 0 && inspectorValid && !testing;
+  const readyToRun = Boolean(flow) && !loading && !saving && !flowTransitioning && !publicationInFlight.current && issues.length === 0 && inspectorValid && !testing;
   const selectedFlowName = flow?.name ?? "尚未建立流程";
 
   return (
@@ -362,8 +422,16 @@ function AppContent() {
         </div>
         <div className="topbar__actions">
           <span className={`save-state${dirty ? " is-dirty" : ""}`} aria-live="polite">{saving ? "儲存中…" : dirty ? "未儲存" : "已儲存"}</span>
-          <button type="button" className="button button--primary" onClick={() => void handleSave()} disabled={!flow || !dirty || loading || saving || savingCases || !inspectorValid}>{saving ? "儲存中…" : "儲存流程"}</button>
+          <button type="button" className="button button--primary" onClick={() => void handleSave()} disabled={!flow || !dirty || loading || saving || savingCases || flowTransitioning || !inspectorValid}>{saving ? "儲存中…" : "儲存流程"}</button>
           <button type="button" className="icon-button danger" aria-label="刪除目前流程" title="刪除目前流程" onClick={() => void handleDeleteFlow()} disabled={!flow || flows.length < 2 || loading || saving || savingCases || flowTransitioning}>刪除</button>
+        </div>
+        <div className="admin-auth" aria-label="管理員驗證">
+          {adminToken ? <><span role="status">管理員已登入</span><button type="button" className="button button--small" onClick={logoutAdmin}>登出</button></> : <form onSubmit={(event) => { event.preventDefault(); void loginAdmin(); }}>
+            <label className="sr-only" htmlFor="admin-token">管理員權杖</label>
+            <input id="admin-token" type="password" autoComplete="current-password" value={loginToken} onChange={(event) => setLoginToken(event.target.value)} placeholder="管理員權杖" aria-describedby={authError ? "admin-auth-error" : undefined} />
+            <button type="submit" className="button button--small" disabled={authBusy || loginToken.length === 0}>{authBusy ? "驗證中…" : "登入"}</button>
+          </form>}
+          {authError && <span id="admin-auth-error" className="form-error" role="alert">{authError}</span>}
         </div>
       </header>
 
@@ -374,21 +442,21 @@ function AppContent() {
           <header className="panel__heading"><div><span className="eyebrow">建立流程</span><h2>積木</h2></div></header>
           <p className="panel__hint">拖曳到畫布或按「＋」新增；點擊積木不會新增。</p>
           <section className="palette__section"><h3>基本決策</h3>
-            <PaletteBlock type="choice" title="單選分類" description="多個文字選項" onAdd={handleAddAt} />
-            <PaletteBlock type="noul" title="是／否判斷" description="依 P(true) 門檻分流" onAdd={handleAddAt} />
-            <PaletteBlock type="score" title="程度評分" description="以數值切分點分流" onAdd={handleAddAt} />
+            <PaletteBlock type="choice" title="單選分類" description="多個文字選項" onAdd={handleAddAt} disabled={flowTransitioning} />
+            <PaletteBlock type="noul" title="是／否判斷" description="依 P(true) 門檻分流" onAdd={handleAddAt} disabled={flowTransitioning} />
+            <PaletteBlock type="score" title="程度評分" description="以數值切分點分流" onAdd={handleAddAt} disabled={flowTransitioning} />
           </section>
-          <section className="palette__section"><h3>輸出</h3><PaletteBlock type="end" title="回傳 JSON" description="設定固定值或決策結果" onAdd={handleAddAt} /></section>
+          <section className="palette__section"><h3>輸出</h3><PaletteBlock type="end" title="回傳 JSON" description="設定固定值或決策結果" onAdd={handleAddAt} disabled={flowTransitioning} /></section>
           <section className="palette__section palette__templates"><div className="section-heading"><h3>我的積木範本</h3><span>{templates.length}</span></div>
             {templates.length === 0 ? <p className="muted small-copy">選取決策節點後，可儲存為範本。</p> : <>
               <p className="muted small-copy">基本積木從預設設定開始；範本會帶入已儲存的問題與分流設定。</p>
               {templates.map((template) => (
                 <div className="template-row" key={template.id}>
-                  <button type="button" className="template-row__add" draggable onDragStart={(event) => beginBlockDrag(event, `template:${template.id}`)}>
+                  <button type="button" className="template-row__add" draggable={!flowTransitioning} disabled={flowTransitioning} onDragStart={(event) => beginBlockDrag(event, `template:${template.id}`)}>
                     <span className="drag-grip" aria-hidden="true">⠿</span><span><strong>{template.name}</strong><small>{template.question.type === "choice" ? "單選" : template.question.type === "noul" ? "是非" : "評分"} · 問題、分流與信心門檻副本</small></span>
                   </button>
-                  <button type="button" className="add-sign" aria-label={`新增範本 ${template.name}`} title={`新增範本 ${template.name}`} onClick={() => handleAddAt(`template:${template.id}`, { x: 530, y: 260 })}>＋</button>
-                  <button type="button" className="icon-button danger template-delete" aria-label={`刪除範本 ${template.name}`} onClick={() => void handleDeleteTemplate(template.id)}>×</button>
+                  <button type="button" className="add-sign" aria-label={`新增範本 ${template.name}`} title={`新增範本 ${template.name}`} onClick={() => handleAddAt(`template:${template.id}`, { x: 530, y: 260 })} disabled={flowTransitioning}>＋</button>
+                  <button type="button" className="icon-button danger template-delete" aria-label={`刪除範本 ${template.name}`} onClick={() => void handleDeleteTemplate(template.id)} disabled={flowTransitioning}>×</button>
                 </div>
               ))}
             </>}
@@ -409,13 +477,13 @@ function AppContent() {
           <section className="test-panel panel" aria-label="流程測試">
             <header className="panel__heading"><div><span className="eyebrow">本機推論</span><h2>測試流程</h2></div><span className="model-pill">Laya</span></header>
             <div className="test-mode-tabs" role="tablist" aria-label="測試方式">
-              <button id="test-mode-single" type="button" role="tab" aria-selected={testMode === "single"} aria-controls="single-test-panel" className={testMode === "single" ? "is-active" : ""} onClick={() => setTestMode("single")} disabled={testing}>單次測試</button>
-              <button id="test-mode-batch" type="button" role="tab" aria-selected={testMode === "batch"} aria-controls="batch-test-panel" className={testMode === "batch" ? "is-active" : ""} onClick={() => setTestMode("batch")} disabled={testing}>批次測試</button>
+              <button id="test-mode-single" type="button" role="tab" aria-selected={testMode === "single"} aria-controls="single-test-panel" className={testMode === "single" ? "is-active" : ""} onClick={() => setTestMode("single")} disabled={testing || flowTransitioning}>單次測試</button>
+              <button id="test-mode-batch" type="button" role="tab" aria-selected={testMode === "batch"} aria-controls="batch-test-panel" className={testMode === "batch" ? "is-active" : ""} onClick={() => setTestMode("batch")} disabled={testing || flowTransitioning}>批次測試</button>
             </div>
             <div role="tabpanel" id="single-test-panel" aria-labelledby="test-mode-single" hidden={testMode !== "single"}>
               <div className="test-panel__body">
-                <div className="input-toggle" role="group" aria-label="輸入格式"><button type="button" className={inputMode === "text" ? "is-active" : ""} onClick={() => setInputMode("text")} disabled={testing}>文字</button><button type="button" className={inputMode === "json" ? "is-active" : ""} onClick={() => setInputMode("json")} disabled={testing}>JSON</button></div>
-                <label className="field"><span>{inputMode === "text" ? "測試文字" : "JSON 輸入"}</span><textarea rows={inputMode === "text" ? 2 : 4} value={testInput} onChange={(event) => setTestInput(event.target.value)} placeholder={inputMode === "text" ? "例如：打開風扇" : '{ "text": "打開風扇" }'} disabled={testing} /></label>
+                <div className="input-toggle" role="group" aria-label="輸入格式"><button type="button" className={inputMode === "text" ? "is-active" : ""} onClick={() => setInputMode("text")} disabled={testing || flowTransitioning}>文字</button><button type="button" className={inputMode === "json" ? "is-active" : ""} onClick={() => setInputMode("json")} disabled={testing || flowTransitioning}>JSON</button></div>
+                <label className="field"><span>{inputMode === "text" ? "測試文字" : "JSON 輸入"}</span><textarea rows={inputMode === "text" ? 2 : 4} value={testInput} onChange={(event) => setTestInput(event.target.value)} placeholder={inputMode === "text" ? "例如：打開風扇" : '{ "text": "打開風扇" }'} disabled={testing || flowTransitioning} /></label>
                 <button type="button" className="button button--primary button--wide" onClick={() => void handleTest()} disabled={!readyToRun}>{testing ? "模型判斷中…" : "執行測試"}</button>
                 {dirty && <p className="helper-copy">測試使用目前未儲存的設定；測試不會自動儲存流程。</p>}
                 {!inspectorValid && <p className="form-error" role="alert">JSON 欄位尚未完成或格式不正確，修正後才能儲存與測試。</p>}
@@ -436,7 +504,8 @@ function AppContent() {
                 </div>}
               </div>
             </div>
-            <BatchTestPanel key={flow?.id ?? "no-flow"} flow={flow} issues={issues} inspectorValid={inspectorValid} dirty={dirty} testing={testing} onTestingChange={setTesting} onDraftDirtyChange={setCaseDraftDirty} onSavingCasesChange={setSavingCases} flowBusy={flowTransitioning} hidden={testMode !== "batch"} />
+            <BatchTestPanel key={`${flow?.id ?? "no-flow"}-${batchMount}`} flow={flow} publishedSuite={publishedSuite} issues={issues} inspectorValid={inspectorValid} dirty={dirty} testing={testing} onTestingChange={setTesting} onDraftDirtyChange={setCaseDraftDirty} onSavingCasesChange={setSavingCases} flowBusy={flowTransitioning} hidden={testMode !== "batch"} />
+            <FlowDraftPanel flow={flow} blocked={dirty || caseDraftDirty || testing || saving || savingCases || flowTransitioning || loading || !inspectorValid} adminAuthenticated={adminToken} onPublish={handleDraftPublish} />
           </section>
           <section className="api-card panel"><div className="api-card__heading"><span className="eyebrow">同網段呼叫</span><button type="button" className="button button--subtle button--small" disabled={!flow} onClick={() => void copyApiExample()}>{copied ? "已複製" : "複製 curl"}</button></div><pre className="api-card__curl" aria-label="curl 指令">{apiExample || "選擇流程後會顯示 curl 指令。"}</pre><small>POST · 只回傳流程設定的 JSON；不執行裝置操作。若無法自動複製，可手動選取上方指令。</small></section>
         </div>
@@ -447,11 +516,11 @@ function AppContent() {
 
 const EMPTY_FLOW: DecisionFlow = { id: "", name: "", nodes: [], edges: [], updatedAt: "" };
 
-function PaletteBlock({ type, title, description, onAdd }: { type: Exclude<BlockType, `template:${string}`>; title: string; description: string; onAdd: (type: BlockType, position: { x: number; y: number }) => void }) {
+function PaletteBlock({ type, title, description, onAdd, disabled = false }: { type: Exclude<BlockType, `template:${string}`>; title: string; description: string; onAdd: (type: BlockType, position: { x: number; y: number }) => void; disabled?: boolean }) {
   return <div className={`palette-block palette-block--${type}`}>
-    <button type="button" draggable className="palette-block__drag" onDragStart={(event) => beginBlockDrag(event, type)}>
+    <button type="button" draggable={!disabled} disabled={disabled} className="palette-block__drag" onDragStart={(event) => beginBlockDrag(event, type)}>
       <span className="drag-grip" aria-hidden="true">⠿</span><span className="palette-block__text"><strong>{title}</strong><small>{description}</small></span>
-    </button><button type="button" className="add-sign" aria-label={`新增${title}`} title={`新增${title}`} onClick={() => onAdd(type, { x: 530, y: 260 })}>＋</button>
+    </button><button type="button" className="add-sign" aria-label={`新增${title}`} title={`新增${title}`} onClick={() => onAdd(type, { x: 530, y: 260 })} disabled={disabled}>＋</button>
   </div>;
 }
 

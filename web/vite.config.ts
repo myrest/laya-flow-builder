@@ -12,8 +12,14 @@ export default defineConfig({
   server: {
     fs: { allow: [workspaceDirectory] },
     proxy: {
-      "/api": `http://127.0.0.1:${apiPort}`,
-      "/health": `http://127.0.0.1:${apiPort}`,
+      "/api": {
+        target: `http://127.0.0.1:${apiPort}`,
+        changeOrigin: false,
+      },
+      "/health": {
+        target: `http://127.0.0.1:${apiPort}`,
+        changeOrigin: false,
+      },
     },
   },
   build: { outDir: "dist", emptyOutDir: true },

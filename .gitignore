@@ -1,5 +1,7 @@
 data/decision-system.json
 data/decision-system.json.tmp-*
+data/admin-token
+data/mcp-token
 node_modules
 web/dist/
 *.tsbuildinfo

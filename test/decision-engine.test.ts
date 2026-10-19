@@ -7,8 +7,8 @@ import { getBranchPorts, runFlow, scorePortFor, scoreRanges, validateFlow } from
 import { runFlowTestCases } from "../flow-test-runner.js";
 import { flowRevision } from "../flow-test-utils.js";
 import { parseDecisionStoreData, parseFlowTestCases } from "../decision-schema.js";
-import { DecisionStore } from "../decision-store.js";
-import type { DecisionFlow, FlowNode, FlowTestCase } from "../decision-types.js";
+import { DecisionStore, flowVersion } from "../decision-store.js";
+import type { DecisionFlow, FlowNode, FlowTestCase, FlowDraftRun } from "../decision-types.js";
 import type { Answer, Question, SystemOneResult } from "../../laya/src/types.js";
 
 function choiceNode(id: string, label: string, y: number): FlowNode {
@@ -481,6 +481,109 @@ test("partial batch saves merge atomically while full and changed-flow runs repl
     await store.saveFlowTestCases(flow.id, suite.revision, [{ ...cases[0]!, name: "Edited case" }, cases[1]!]);
     await assert.rejects(store.saveFlowTestRun(flow.id, suite.revision, run("second"), true), /已更新/);
     assert.equal(store.getFlowTestSuite(flow.id).lastRun, null);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy store data defaults draft and history arrays and rejects malformed records", () => {
+  assert.deepEqual(parseDecisionStoreData({ flows: [], templates: [] }), {
+    flows: [], templates: [], flowTestSuites: [], flowDrafts: [], flowHistory: [],
+  });
+  assert.throws(() => parseDecisionStoreData({ flows: [], templates: [], flowDrafts: [null] }), /flowDraft/);
+  assert.throws(() => parseDecisionStoreData({ flows: [], templates: [], flowHistory: [{ id: "history", flowId: "missing" }] }), /flowHistory/);
+});
+
+test("drafts isolate source flows and cloned cases and reject stale source apply without partial writes", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "laya-flow-draft-isolation-"));
+  try {
+    const store = await DecisionStore.open(path.join(directory, "flows.json"));
+    const source = await store.createFlow("Live workflow");
+    const cases: FlowTestCase[] = [{ id: "live-case", name: "Live case", input: "hello", expectedOutput: {}, enabled: true }];
+    await store.saveFlowTestCases(source.id, "", cases);
+    const draft = await store.createDraft(source.id);
+    assert.equal(draft.flow.id, draft.id);
+    assert.equal(draft.name, "Live workflow-copy");
+    const secondCopy = await store.createDraft(source.id);
+    const firstNewFlowDraft = await store.createDraft();
+    const secondNewFlowDraft = await store.createDraft();
+    assert.equal(secondCopy.name, "Live workflow-copy-2");
+    assert.equal(firstNewFlowDraft.name, "New flow");
+    assert.equal(secondNewFlowDraft.name, "New flow-2");
+    assert.deepEqual(draft.cases, cases);
+
+    draft.flow.nodes[0]!.data.label = "mutated detached result";
+    draft.cases[0]!.name = "mutated detached case";
+    const untouched = store.getDraft(draft.id);
+    assert.ok(untouched);
+    assert.notEqual(untouched.flow.nodes[0]?.data.label, "mutated detached result");
+    assert.equal(store.getFlow(source.id)?.nodes[0]?.data.label, "輸入請求");
+    assert.equal(store.getFlowTestSuite(source.id).cases[0]?.name, "Live case");
+
+    const editable = await store.updateDraft(draft.id, draft.revision, {
+      cases: [{ ...cases[0]!, id: "candidate-case", name: "Candidate case" }],
+    });
+    await assert.rejects(store.updateDraft(draft.id, draft.revision, {}), /已更新/);
+    const review = await store.setDraftStatus(editable.id, editable.revision, "review");
+    const sourceAtReview = store.getFlow(source.id);
+    assert.ok(sourceAtReview);
+    const updatedSource = await store.saveFlow({
+      ...sourceAtReview,
+      nodes: sourceAtReview.nodes.map((node) => ({ ...node, position: { x: node.position.x + 10, y: node.position.y + 10 } })),
+    });
+    assert.equal(flowRevision(updatedSource), flowRevision(sourceAtReview));
+    assert.notEqual(flowVersion(updatedSource), flowVersion(sourceAtReview));
+    const beforeFlow = store.getFlow(source.id);
+    const beforeSuite = store.getFlowTestSuite(source.id);
+    const beforeHistory = store.listHistory(source.id);
+    await assert.rejects(store.applyDraft(review.id, review.revision, true), /來源流程或測試案例已更新/);
+    assert.deepEqual(store.getFlow(source.id), beforeFlow);
+    assert.deepEqual(store.getFlowTestSuite(source.id), beforeSuite);
+    assert.deepEqual(store.listHistory(source.id), beforeHistory);
+    assert.equal(store.getDraft(review.id)?.status, "review");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("applying a draft atomically replaces cases while preserving live identity and history restores prior content", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "laya-flow-draft-apply-"));
+  try {
+    const store = await DecisionStore.open(path.join(directory, "flows.json"));
+    const source = await store.createFlow("Human name");
+    const originalCase: FlowTestCase = { id: "original", name: "Original", input: "before", expectedOutput: {}, enabled: true };
+    const originalSuite = await store.saveFlowTestCases(source.id, "", [originalCase]);
+    const draft = await store.createDraft(source.id);
+    const candidateCase: FlowTestCase = { id: "candidate", name: "Candidate", input: "after", expectedOutput: {}, enabled: true };
+    const changed = await store.updateDraft(draft.id, draft.revision, {
+      flow: { ...draft.flow, name: "Candidate flow" },
+      cases: [candidateCase],
+    });
+    const run = await runFlowTestCases(changed.flow, changed.cases, mockLaya({
+      type: "choice", choice: "yes", probabilities: { yes: 0.9, no: 0.1 }, confidence: 0.8, rl_agent: { act_probability: 0.9 },
+    }));
+    const draftRun: FlowDraftRun = {
+      draftRevision: changed.revision, baseline: null, candidate: run, traces: {}, baselineTraces: {},
+    };
+    const tested = await store.saveDraftRun(changed.id, changed.revision, draftRun);
+    const review = await store.setDraftStatus(tested.id, tested.revision, "review");
+    const applied = await store.applyDraft(review.id, review.revision);
+    assert.equal(applied.flow.id, source.id);
+    assert.equal(applied.flow.name, "Human name");
+    assert.deepEqual(applied.suite.cases, [candidateCase]);
+    assert.equal(applied.suite.lastRun?.flowRevision, flowRevision(applied.flow));
+    assert.equal(applied.draft.status, "applied");
+    assert.equal(store.listHistory(source.id).length, 1);
+    assert.deepEqual(store.listHistory(source.id)[0]?.suite, originalSuite);
+
+    const history = store.listHistory(source.id)[0];
+    assert.ok(history);
+    const restored = await store.restoreHistory(source.id, history.id, flowVersion(applied.flow), applied.suite.revision);
+    assert.equal(restored.flow.id, source.id);
+    assert.equal(restored.flow.name, "Human name");
+    assert.deepEqual(restored.suite.cases, [originalCase]);
+    assert.equal(restored.suite.lastRun, null);
+    assert.equal(store.listHistory(source.id).length, 2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

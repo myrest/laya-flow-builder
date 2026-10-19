@@ -13,7 +13,7 @@ npm run dev
 - API：`http://<這台機器的 IP>:3000`
 - 健康檢查：`http://localhost:3000/health`
 
-服務監聽 `0.0.0.0`，可讓同網段機器連線。API 沒有登入驗證；只在可信任的內網使用，並用防火牆限制來源。
+服務監聽 `0.0.0.0`，可讓同網段機器連線。流程、範本與流程草稿可公開讀取；建立、更新、刪除流程／範本、修改或執行會保存結果的批次測試、建立或修改草稿及歷史還原都需要管理員憑證。若未設定 `LAYA_ADMIN_TOKEN`／`LAYA_MCP_TOKEN`，啟動時會在資料目錄產生 `admin-token` 與 `mcp-token`（各 32 bytes、檔案權限 `0600`），只會記錄檔案路徑、不會輸出憑證；設定這兩個環境變數可改用自訂憑證，且憑證須不同。管理員登入畫面使用 `admin-token`。`/run`、`/test`、`/validate`、`/system-one` 維持免憑證。僅在可信任的內網使用，並用防火牆限制來源；跨網段時必須使用 HTTPS，避免憑證以明文傳送。
 
 首次執行若模型尚未快取，Laya 會自 Hugging Face 下載約 1.7 GB 權重至 `~/.cache/receptron-laya`。流程資料預設儲存在 `data/decision-system.json`；可用 `LAYA_DATA_DIR` 改變資料目錄。
 
@@ -58,7 +58,48 @@ curl -X POST http://localhost:3000/api/flows/<flow-id>/test \
 
 `/test` 回傳 `{ "status": "completed", "output", "trace", "durationMs" }`。測試面板會附上目前流程快照，因此未儲存的編輯也能測試；快照只用於當次測試，不會寫入流程資料。API 呼叫省略 `flow` 欄位時則使用已儲存版本。`/run` 回傳流程設定的 JSON；低信心結果也會依指定預設選項繼續執行。舊流程若連接了獨立的「信心不足」出口，需改成一般選項出口並指定為低信心預設。流程支援建立、讀取、更新、刪除；範本支援建立、讀取、刪除。`POST /api/flows/<flow-id>/validate` 檢查流程是否完整。
 
-批次測試 API：`GET /api/flows/<flow-id>/test-cases` 讀取套件；`PUT` 同一路徑以 `{ "revision": <套件版本>, "cases": [...] }` 儲存案例（每個案例包含 `id`、`name`、文字或其他 JSON `input`、物件 `expectedOutput`、`enabled`）。版本不符時回傳 `409`，避免另一個頁面覆蓋較新的案例。`POST /api/flows/<flow-id>/test-cases/run` 接受 `{ "flow": <流程快照> }`，可選擇附上 `caseIds` 只重跑指定案例；省略時執行所有啟用案例。回應包含套件與最近一次各案例結果，單一案例會標示 `passed`、`failed` 或 `error`。
+批次測試 API：`GET /api/flows/<flow-id>/test-cases` 讀取套件；`PUT` 同一路徑以 `{ "revision": <套件版本>, "cases": [...] }` 儲存案例（每個案例包含 `id`、`name`、文字或其他 JSON `input`、物件 `expectedOutput`、`enabled`）。版本不符時回傳 `409`，避免另一個頁面覆蓋較新的案例。`POST /api/flows/<flow-id>/test-cases/run` 接受 `{ "flow": <流程快照> }`，可選擇附上 `caseIds` 只重跑指定案例；省略時執行所有啟用案例。回應包含套件與最近一次各案例結果，單一案例會標示 `passed`、`failed` 或 `error`。因執行結果會寫回正式測試套件，儲存案例與執行此批次 API 需要管理員憑證。
+
+## MCP：AI 草稿與人工覆寫
+
+MCP 只操作隔離的流程草稿；MCP 身份沒有正式流程寫入、套用、歷史還原或範本寫入權限。AI 可讀取正式流程作為來源、建立 `流程-copy` 草稿或新流程草稿、修改草稿流程與測試案例、驗證、單次測試、執行基準／候選批次回歸測試、送審或捨棄。模型只由 API 載入一次；MCP stdio 程序透過 HTTP 呼叫 API，不會再載入模型。
+
+一次性安裝 MCP 套件：
+
+```bash
+npm install --prefix mcp
+```
+
+安裝依賴後，在 MCP host 的 stdio server 設定中直接執行 MCP 程式（**不要用 `npm run` 啟動 host 命令**；npm 會把腳本提示寫到 stdout，污染 MCP JSON-RPC 通道）：
+
+```json
+{
+  "command": "/完整路徑/laya-test/mcp/node_modules/.bin/tsx",
+  "args": ["/完整路徑/laya-test/mcp/mcp-server.ts"],
+  "env": {
+    "LAYA_API_URL": "http://127.0.0.1:3000",
+    "LAYA_MCP_TOKEN": "<data/mcp-token 的內容>"
+  }
+}
+```
+
+- `LAYA_API_URL`：API URL，預設 `http://127.0.0.1:3000`。
+- `LAYA_MCP_TOKEN`：API 資料目錄中的 `mcp-token` 內容。預設位置為 `data/mcp-token`；自訂 `LAYA_DATA_DIR` 時改讀該目錄。
+
+API 啟動後可用下列命令手動啟動 stdio server（供 MCP host 以相同方式呼叫；不要將 `admin-token` 提供給 AI agent）：
+
+```bash
+LAYA_API_URL=http://127.0.0.1:3000 \
+LAYA_MCP_TOKEN="$(cat data/mcp-token)" \
+./mcp/node_modules/.bin/tsx mcp/mcp-server.ts
+```
+
+MCP host 需直接啟動 stdio 命令，不能用 `npm run` 或把其他輸出混入 stdout，以免污染 MCP JSON-RPC 通道。MCP token 與管理員 token 不同；勿把 `admin-token` 提供給 AI agent。若 API 經網路連線，需使用 HTTPS 並限制 API 可達來源。
+
+人工審查在流程編輯器右側的「流程草稿」面板進行：檢視基準／候選流程差異、預期案例變更、批次結果及失敗 trace。只有登入管理員後，才可送交審查、捨棄或執行人工套用。覆寫前會重新檢查來源完整快照與測試案例 revision；若來源在草稿建立後有任何變更，操作以衝突停止，不能強制蓋過。套用保留正式流程 ID 與名稱，並將套用前的流程及測試案例存入歷史；可以人工確認歷史並以新版本還原。建立新流程草稿時，人工確認後才會新增正式流程。套用或還原都不由 MCP 提供。
+審查確認只適用於當前草稿、來源流程／案例版本與批次結果；任何相關資料變更都會要求重新確認。套用或歷史還原期間，編輯器會鎖定流程切換與編輯，並以 API 回傳的新流程及測試套件同步畫面；歷史還原目標是所選草稿的來源流程。
+
+MCP 僅能呼叫 `/api/mcp/...` 的白名單路徑；即使 MCP token 用於一般 API 寫入路徑也會被拒絕。管理員 token 只存在當前瀏覽器 sessionStorage，API 對帶 Origin 的管理員寫入檢查其 Origin/Host 一致；Vite 開發代理保留瀏覽器的 Host，以維持這項同源檢查。
 
 ## 相容的 Laya endpoint
 

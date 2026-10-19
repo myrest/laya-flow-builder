@@ -8,6 +8,7 @@ import { getFlowTestSuite, runFlowTestBatch, saveFlowTestCases } from "./api";
 
 interface BatchTestPanelProps {
   flow: DecisionFlow | null;
+  publishedSuite: FlowTestSuite | null;
   issues: string[];
   inspectorValid: boolean;
   dirty: boolean;
@@ -35,7 +36,7 @@ function resultLabel(result: FlowTestCaseResult | undefined, stale: boolean): st
   return "執行錯誤";
 }
 
-export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, onTestingChange, onDraftDirtyChange, onSavingCasesChange, flowBusy, hidden }: BatchTestPanelProps) {
+export function BatchTestPanel({ flow, publishedSuite, issues, inspectorValid, dirty, testing, onTestingChange, onDraftDirtyChange, onSavingCasesChange, flowBusy, hidden }: BatchTestPanelProps) {
   const [suite, setSuite] = useState<FlowTestSuite | null>(null);
   const [loading, setLoading] = useState(false);
   const [savingCases, setSavingCases] = useState(false);
@@ -65,6 +66,15 @@ export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, o
     setLoading(true);
     setCaseError("");
     setDraft(null);
+    if (publishedSuite?.flowId === flow.id) {
+      setSuite(publishedSuite);
+      setLoading(false);
+      setCaseError("");
+      setRunningError("");
+      setDraft(null);
+      changeDraftDirty(false);
+      return;
+    }
     changeDraftDirty(false);
     getFlowTestSuite(flow.id).then((loaded) => {
       if (active) setSuite(loaded);
@@ -74,7 +84,7 @@ export function BatchTestPanel({ flow, issues, inspectorValid, dirty, testing, o
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [flow?.id, onDraftDirtyChange]);
+  }, [flow?.id, onDraftDirtyChange, publishedSuite]);
 
   const currentRevision = useMemo(() => flow ? flowRevision(flow) : "", [flow]);
   const stale = Boolean(suite?.lastRun && suite.lastRun.flowRevision !== currentRevision);
