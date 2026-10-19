@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "laya-flow": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/mcp/node_modules/.bin/tsx",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp/claude-launcher.ts"],
+      "env": {
+        "LAYA_DATA_DIR": "${LAYA_DATA_DIR:-data}",
+        "LAYA_API_URL": "${LAYA_API_URL:-http://127.0.0.1:3000}"
+      }
+    }
+  }
+}

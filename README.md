@@ -70,7 +70,9 @@ MCP 只操作隔離的流程草稿；MCP 身份沒有正式流程寫入、套用
 npm install --prefix mcp
 ```
 
-安裝依賴後，在 MCP host 的 stdio server 設定中直接執行 MCP 程式（**不要用 `npm run` 啟動 host 命令**；npm 會把腳本提示寫到 stdout，污染 MCP JSON-RPC 通道）：
+根目錄 `.mcp.json` 已加入 Claude Code 的 project-level server `laya-flow`。安裝依賴並啟動 API 後，在 Claude Code 信任此專案並核准此 server。設定直接執行 `tsx`；`mcp/claude-launcher.ts` 從 `data/mcp-token` 讀取憑證，不將 token 寫入設定檔。若 API 使用自訂 `LAYA_DATA_DIR`，MCP host 也需設定相同路徑；`LAYA_API_URL` 可覆寫預設 API URL。
+
+其他 MCP host 可直接執行 stdio server（不要用 `npm run` 啟動 host 命令；npm 會把腳本提示寫到 stdout，污染 MCP JSON-RPC 通道）。請使用本機絕對路徑，並以 `data/mcp-token` 內容替換憑證：
 
 ```json
 {
