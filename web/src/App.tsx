@@ -25,10 +25,11 @@ import { FlowCanvas, beginBlockDrag } from "./FlowCanvas";
 import { Inspector } from "./Inspector";
 import { BatchTestPanel } from "./BatchTestPanel";
 import { removeFlowNodes } from "./flow-editing";
+import { DocsPanel } from "./DocsPanel";
 
 type BlockType = "choice" | "noul" | "score" | "end" | `template:${string}`;
 type InputMode = "text" | "json";
-type Workspace = "design" | "test" | "drafts";
+type Workspace = "design" | "test" | "drafts" | "docs";
 
 function makeDecisionNode(type: "choice" | "noul" | "score", position: { x: number; y: number }, template?: DecisionTemplate): DecisionFlowNode {
   const question = template?.question ?? (type === "noul"
@@ -478,7 +479,7 @@ function AppContent() {
 
       <nav className="workspace-nav" aria-label="工作區">
         <div className="workspace-nav__items">
-          {([["design", "流程設計"], ["test", "測試"], ["drafts", "草稿"]] as const).map(([key, label]) => <button key={key} type="button" aria-pressed={workspace === key} aria-controls={`workspace-${key}`} onClick={() => setWorkspace(key)} disabled={flowTransitioning}>{label}</button>)}
+          {([["design", "流程設計"], ["test", "測試"], ["drafts", "草稿"], ["docs", "API 文件"]] as const).map(([key, label]) => <button key={key} type="button" aria-pressed={workspace === key} aria-controls={`workspace-${key}`} onClick={() => setWorkspace(key)} disabled={flowTransitioning}>{label}</button>)}
         </div>
         <button type="button" className="button" onClick={() => apiDialog.current?.showModal()} disabled={!flow || flowTransitioning}>API 呼叫</button>
       </nav>
@@ -573,6 +574,10 @@ function AppContent() {
         <FlowDraftPanel flow={flow} blocked={dirty || caseDraftDirty || testing || saving || savingCases || flowTransitioning || loading || !inspectorValid} adminAuthenticated={adminToken} onRequestAdminLogin={requestAdminLogin} onPublish={handleDraftPublish} />
       </div>
 
+      <div id="workspace-docs" className="work-area docs-workspace" hidden={workspace !== "docs"}>
+        <DocsPanel apiUrl={apiUrl} flow={flow} />
+      </div>
+
       <dialog ref={apiDialog} className="api-drawer" aria-labelledby="api-title" onClick={(event) => { if (event.target === event.currentTarget) event.currentTarget.close(); }}>
         <section className="api-drawer__content">
           <header className="panel__heading"><h2 id="api-title">API 呼叫</h2><button type="button" className="button" autoFocus onClick={() => apiDialog.current?.close()}>關閉</button></header>
@@ -583,6 +588,8 @@ function AppContent() {
           <button type="button" className="button button--primary" disabled={!flow} onClick={() => void copyApiExample()}>{copied ? "已複製" : "複製 curl"}</button>
           {copyError && <p className="form-error" role="alert">{copyError}</p>}
           <p className="helper-copy">若無法自動複製，可手動選取上方指令。不要在呼叫中放入管理員憑證。</p>
+          <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "8px 0" }} />
+          <button type="button" className="button button--subtle" onClick={() => { apiDialog.current?.close(); setWorkspace("docs"); }}>查看完整 API 文件與直接呼叫手冊 →</button>
         </section>
       </dialog>
       <dialog ref={flowDialog} className="flow-options" aria-labelledby="flow-options-title" onClick={(event) => { if (event.target === event.currentTarget) event.currentTarget.close(); }}>

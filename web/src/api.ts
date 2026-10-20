@@ -1,4 +1,4 @@
-import type { Question } from "../../../laya/src/types.js";
+import type { Question, SystemOneResult } from "../../../laya/src/types.js";
 import type { DecisionFlow, DecisionTemplate, FlowDraft, FlowDraftPreview, FlowHistoryEntry, FlowTestCase, FlowTestResult, FlowTestSuite } from "../../decision-types";
 import { isRecord } from "../../decision-guards";
 import { parseDecisionFlow, parseDecisionStoreData, parseFlowDraft, parseFlowHistoryEntry, parseFlowTestResult, parseFlowTestSuite } from "../../decision-schema";
@@ -9,7 +9,7 @@ async function request(pathname: string, init?: RequestInit): Promise<unknown> {
   const headers = new Headers(init?.headers);
   headers.set("Content-Type", "application/json");
   const method = (init?.method ?? "GET").toUpperCase();
-  const isPublicMutation = method === "POST" && /\/(?:run|test|validate)$/.test(pathname) && !/\/test-cases\/run$/.test(pathname);
+  const isPublicMutation = method === "POST" && (/\/(?:run|test|validate)$/.test(pathname) || pathname === "/api/system-one") && !/\/test-cases\/run$/.test(pathname);
   const isAdminOnlyRead = method === "GET" && /\/api\/flows\/[^/]+\/history$/.test(pathname);
   const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
   if (((method !== "GET" && method !== "HEAD" && !isPublicMutation) || isAdminOnlyRead) && token) headers.set("Authorization", `Bearer ${token}`);
@@ -182,6 +182,13 @@ export async function runFlowTestBatch(flow: DecisionFlow, caseIds?: string[]): 
   }));
 }
 
+
+export async function directSystemOne(state: unknown, questions: Record<string, Question>): Promise<SystemOneResult<Record<string, Question>>> {
+  return (await request("/api/system-one", {
+    method: "POST",
+    body: JSON.stringify({ state, questions }),
+  })) as SystemOneResult<Record<string, Question>>;
+}
 
 export function choiceQuestion(): Question {
   return { type: "choice", instructions: "要判斷什麼？", criteria: { yes: "符合", no: "不符合", other: "其他／無法判斷" } };
