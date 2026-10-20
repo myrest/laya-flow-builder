@@ -2,10 +2,19 @@
 
 Laya Flow Builder 是以 Laya 多語言 ONNX 模型建置與測試決策流程的 Web 工具及 HTTP API。模型執行使用同層的 `../laya` 原始碼；Docker 建置也需要這份相鄰的 Laya repository，因目前公開 npm 套件的特殊 token 契約與模型快取不相容。模型快取由 `LAYA_CACHE` 指定。
 
-## 啟動
+## 取得原始碼
+
+本專案依賴相鄰的 [Laya](https://github.com/receptron/laya) SDK，兩者需 clone 至同一個父目錄下：
 
 ```bash
-cd ~/TEST/laya-flow-builder
+git clone https://github.com/receptron/laya.git
+git clone https://github.com/myrest/laya-flow-builder.git
+```
+
+## 本機啟動
+
+```bash
+cd laya-flow-builder
 npm --prefix ../laya ci
 npm --prefix ../laya run build
 npm ci
@@ -26,6 +35,7 @@ npm run dev
 Docker Compose 需要 `laya-flow-builder` 與 `laya` 兩個 repository 位於同一個父目錄，並以父目錄作為 build context；建置時先編譯 `../laya`，再建置本專案。容器內的 API 與網頁使用 `3000` 埠，主機端只在 loopback 發佈 `15000` 埠。流程資料直接掛載 `./data`，模型快取掛載主機的 `~/.cache/receptron-laya`；兩者不會複製進映像。容器以 UID 1000 的 `node` 使用者執行，這兩個目錄必須存在且可由 UID 1000 讀寫。
 
 ```bash
+cd laya-flow-builder
 mkdir -p data "$HOME/.cache/receptron-laya"
 docker compose up --build -d
 docker compose ps
