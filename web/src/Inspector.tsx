@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Question } from "../../../laya/src/types.js";
-import { getBranchPorts, getDefaultLowConfidenceBranch } from "../../decision-engine";
+import { getAncestorDecisions, getBranchPorts, getDefaultLowConfidenceBranch } from "../../decision-engine";
 import type { DecisionFlow, DecisionFlowNode, DecisionTemplate, EndFlowNode, FlowNode, JsonValue, OutputValue } from "../../decision-types";
 import { MAX_INPUT_NODE_REFS } from "../../decision-types";
 import { createId } from "./id";
@@ -25,24 +25,9 @@ function makeQuestion(type: Question["type"], instructions: string): Question {
   return { type, instructions, criteria: { yes: "符合", no: "不符合", other: "其他／無法判斷" } };
 }
 
-function getAncestorDecisions(flow: DecisionFlow, nodeId: string): DecisionFlowNode[] {
-  const nodes = new Map(flow.nodes.map((node) => [node.id, node]));
-  const ancestors: DecisionFlowNode[] = [];
-  const visited = new Set<string>();
-  let parentId = flow.edges.find((edge) => edge.target === nodeId)?.source;
-  while (parentId && !visited.has(parentId)) {
-    visited.add(parentId);
-    const parent = nodes.get(parentId);
-    if (!parent) break;
-    if (parent.type === "decision") ancestors.unshift(parent);
-    parentId = flow.edges.find((edge) => edge.target === parentId)?.source;
-  }
-  return ancestors;
-}
-
 function withLabel(node: FlowNode, label: string): FlowNode {
   if (node.type === "start") return { ...node, data: { ...node.data, label } };
-  if (node.type === "decision") return { ...node, data: { ...node.data, label } };
+  if (node.type === "end") return { ...node, data: { ...node.data, label } };
   return { ...node, data: { ...node.data, label } };
 }
 
@@ -53,6 +38,14 @@ function referenceProblem(flow: DecisionFlow, nodeId: string, ancestors: Decisio
   if (!ancestors.some((ancestor) => ancestor.id === nodeId)) return `不在上游路徑：${referenced.data.label || nodeId}`;
   return null;
 }
+function uniqueOutputKey(base: string, usedKeys: Set<string>): string {
+  let key = base;
+  let suffix = 2;
+  while (usedKeys.has(key)) key = `${base}_${suffix++}`;
+  usedKeys.add(key);
+  return key;
+}
+
 
 function parseScoreThresholds(raw: string, max: number): { thresholds: number[]; error: string } {
   if (raw.trim() === "") return { thresholds: [], error: "" };
@@ -116,7 +109,6 @@ export function Inspector({ flow, node, templates, onChangeFlow, onDeleteNode, o
     <aside className="inspector panel" aria-label="節點設定">
       <header className="panel__heading"><div><span className="eyebrow">編輯器</span><h2>節點設定</h2></div></header>
       <div className="empty-state"><span className="empty-state__mark">⌖</span><strong>選取一個積木</strong><p>點選畫布節點以編輯問題、分支與 JSON 輸出。</p><p className="muted">連線：拖曳節點右側出口至下一個節點。</p></div>
-      <section className="api-card"><span className="eyebrow">執行 API</span><code>POST /api/flows/{"{flowId}"}/run</code><pre>{'{ "input": "打開風扇" }'}</pre><small>成功時回傳設定好的 JSON，不包含決策追蹤資訊。</small></section>
     </aside>
   );
 
@@ -124,8 +116,6 @@ export function Inspector({ flow, node, templates, onChangeFlow, onDeleteNode, o
   const canReference = ancestors;
   const decisionNode = node.type === "decision" ? node : null;
   const endNode = node.type === "end" ? node : null;
-  const startEdge = node.type === "start" ? flow.edges.find((edge) => edge.source === node.id && edge.sourceHandle === "next") : undefined;
-  const startTargetLabel = startEdge ? flow.nodes.find((candidate) => candidate.id === startEdge.target)?.data.label : undefined;
   const question = decisionNode?.data.question;
   const commitDecision = (updated: DecisionFlowNode, renames?: Map<string, string>) => commitNode(updated, renames);
 
@@ -134,7 +124,7 @@ export function Inspector({ flow, node, templates, onChangeFlow, onDeleteNode, o
       <header className="panel__heading"><div><span className="eyebrow">{node.type === "start" ? "流程輸入" : node.type === "end" ? "JSON 回傳" : "決策節點"}</span><h2>{node.data.label || "未命名節點"}</h2></div></header>
       <div className="inspector__body">
         <label className="field"><span>節點名稱</span><input value={node.data.label} maxLength={120} onChange={(event) => commitNode(withLabel(node, event.target.value))} /></label>
-        {node.type === "start" && <p className="helper-copy">此節點接收執行 API 的 <code>input</code>，不會呼叫裝置。起點只有一個「下一步」出口，目前{startTargetLabel ? `已連到「${startTargetLabel}」` : "尚未連線"}；若要更換目標，先選取連線並按 Delete，再拖曳到新節點。</p>}
+        {node.type === "start" && <p className="helper-copy">此節點接收執行 API 的 <code>input</code>，不會呼叫裝置。起點必須只連到一個下一步；互斥出口可共用同一個結束節點。</p>}
         {decisionNode && question && (
           <>
             <label className="field"><span>判斷類型</span>
@@ -279,7 +269,32 @@ export function Inspector({ flow, node, templates, onChangeFlow, onDeleteNode, o
                 {jsonErrors[field.id] && <p className="form-error" role="alert">{jsonErrors[field.id]}</p>}
               </div>
             ))}
-            <button type="button" className="button button--subtle button--small" onClick={() => commitNode({ ...endNode, data: { ...endNode.data, fields: [...endNode.data.fields, { id: createId(), key: "result", value: { kind: "literal", value: null } }] } })}>＋ 新增 JSON 欄位</button>
+            <div className="output-field-actions">
+              <button type="button" className="button button--subtle button--small" onClick={() => {
+                const usedKeys = new Set(endNode.data.fields.map((field) => field.key));
+                const key = uniqueOutputKey("result", usedKeys);
+                commitNode({ ...endNode, data: { ...endNode.data, fields: [...endNode.data.fields, { id: createId(), key, value: { kind: "literal", value: null } }] } });
+              }}>＋ 新增 JSON 欄位</button>
+              {canReference.length > 0 && (
+                <button
+                  type="button"
+                  className="button button--subtle button--small"
+                  disabled={canReference.every((ancestor) => endNode.data.fields.some((f) => f.value.kind === "decision" && f.value.nodeId === ancestor.id))}
+                  onClick={() => {
+                    const missing = canReference.filter((ancestor) => !endNode.data.fields.some((f) => f.value.kind === "decision" && f.value.nodeId === ancestor.id));
+                    const usedKeys = new Set(endNode.data.fields.map((field) => field.key));
+                    const newFields = missing.map((ancestor) => {
+                      const baseKey = ancestor.data.label.replace(/^#[\d.]+\s*\|\s*/, "").replace(/[^\w\u4e00-\u9fa5]/g, "") || "field";
+                      const key = uniqueOutputKey(baseKey, usedKeys);
+                      return { id: createId(), key, value: { kind: "decision" as const, nodeId: ancestor.id } };
+                    });
+                    commitNode({ ...endNode, data: { ...endNode.data, fields: [...endNode.data.fields, ...newFields] } });
+                  }}
+                >
+                  帶入上游決策結果
+                </button>
+              )}
+            </div>
           </fieldset>
         )}
         {node.type !== "start" && <button type="button" className="button button--danger" onClick={() => onDeleteNode(node.id)}>刪除此積木</button>}

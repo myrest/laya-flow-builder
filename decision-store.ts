@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ChoiceQuestion } from "../laya/src/types.js";
+import type { ChoiceQuestion, NoulQuestion, Question } from "../laya/src/types.js";
 import { DEFAULT_MIN_CONFIDENCE, MAX_FLOW_NAME_LENGTH } from "./decision-types.js";
 import { getDefaultLowConfidenceBranch, validateFlow } from "./decision-engine.js";
 import { flowRevision } from "./flow-test-utils.js";
@@ -34,7 +34,7 @@ function defaultChoice(instructions: string, criteria: Record<string, string>): 
   return { type: "choice", instructions, criteria };
 }
 
-function demoDecision(id: string, label: string, question: ChoiceQuestion, position: { x: number; y: number }): FlowNode {
+function demoDecision(id: string, label: string, question: Question, position: { x: number; y: number }): FlowNode {
   return {
     id,
     type: "decision",
@@ -62,16 +62,18 @@ function createInitialData(): DecisionStoreData {
     request: randomUUID(),
     device: randomUUID(),
     action: randomUUID(),
-    notRequest: randomUUID(),
-    unknownDevice: randomUUID(),
-    actionOn: randomUUID(),
-    actionOff: randomUUID(),
-    actionOther: randomUUID(),
+    iotEnd: randomUUID(),
+    sharedEnd: randomUUID(),
+    flowId: randomUUID(),
   };
-  const requestQuestion = defaultChoice("這句話是否明確要求操作物聯網裝置？", {
-    yes: "明確要求控制裝置，例如打開、關閉或調整設定",
-    no: "不是裝置控制要求，例如詢問資訊或一般對話",
-  });
+  const requestQuestion: NoulQuestion = {
+    type: "noul",
+    instructions: "這句話是否明確要求操作物聯網裝置？",
+    criteria: {
+      true: "明確要求控制裝置，例如打開、關閉或調整設定",
+      false: "不是裝置控制要求，例如詢問資訊或一般對話",
+    },
+  };
   const deviceQuestion = defaultChoice("使用者想操作哪一種裝置？", {
     fan: "風扇、電風扇或循環扇",
     other: "無法識別或不是目前支援的裝置",
@@ -82,55 +84,59 @@ function createInitialData(): DecisionStoreData {
     other: "無法識別的操作",
   });
   const decisionNodes: FlowNode[] = [
-    { id: ids.start, type: "start", position: { x: 60, y: 280 }, data: { label: "輸入請求" } },
-    demoDecision(ids.request, "#1｜是否為 IoT 操作", requestQuestion, { x: 350, y: 280 }),
-    demoDecision(ids.device, "#2｜識別裝置", deviceQuestion, { x: 700, y: 180 }),
-    demoDecision(ids.action, "#3｜判斷操作", actionQuestion, { x: 1050, y: 180 }),
-    demoEnd(ids.notRequest, "非 IoT 操作", { x: 700, y: 500 }, [
+    { id: ids.start, type: "start", position: { x: 60, y: 240 }, data: { label: "輸入請求" } },
+    demoDecision(ids.request, "#1｜是否為 IoT 操作", requestQuestion, { x: 340, y: 240 }),
+    demoDecision(ids.device, "#2｜識別裝置", deviceQuestion, { x: 680, y: 240 }),
+    demoDecision(ids.action, "#3｜判斷操作", actionQuestion, { x: 1020, y: 240 }),
+    demoEnd(ids.iotEnd, "輸出：IoT 控制指令", { x: 1360, y: 240 }, [
+      { id: randomUUID(), key: "iotRequest", value: { kind: "literal", value: true } },
+      { id: randomUUID(), key: "device", value: { kind: "decision", nodeId: ids.device } },
+      { id: randomUUID(), key: "action", value: { kind: "decision", nodeId: ids.action } },
+    ]),
+    demoEnd(ids.sharedEnd, "輸出：非 IoT 或不支援", { x: 1020, y: 480 }, [
       { id: randomUUID(), key: "iotRequest", value: { kind: "literal", value: false } },
-    ]),
-    demoEnd(ids.unknownDevice, "其他裝置", { x: 1050, y: 470 }, [
-      { id: randomUUID(), key: "iotRequest", value: { kind: "literal", value: true } },
-      { id: randomUUID(), key: "acceptedDevice", value: { kind: "literal", value: false } },
-      { id: randomUUID(), key: "device", value: { kind: "literal", value: "other" } },
-    ]),
-    demoEnd(ids.actionOn, "輸出：開啟", { x: 1430, y: 100 }, [
-      { id: randomUUID(), key: "iotRequest", value: { kind: "literal", value: true } },
-      { id: randomUUID(), key: "acceptedDevice", value: { kind: "literal", value: true } },
-      { id: randomUUID(), key: "device", value: { kind: "literal", value: "fan" } },
-      { id: randomUUID(), key: "action", value: { kind: "literal", value: "on" } },
-    ]),
-    demoEnd(ids.actionOff, "輸出：關閉", { x: 1430, y: 280 }, [
-      { id: randomUUID(), key: "iotRequest", value: { kind: "literal", value: true } },
-      { id: randomUUID(), key: "acceptedDevice", value: { kind: "literal", value: true } },
-      { id: randomUUID(), key: "device", value: { kind: "literal", value: "fan" } },
-      { id: randomUUID(), key: "action", value: { kind: "literal", value: "off" } },
-    ]),
-    demoEnd(ids.actionOther, "輸出：其他操作", { x: 1430, y: 460 }, [
-      { id: randomUUID(), key: "iotRequest", value: { kind: "literal", value: true } },
-      { id: randomUUID(), key: "acceptedDevice", value: { kind: "literal", value: true } },
-      { id: randomUUID(), key: "device", value: { kind: "literal", value: "fan" } },
-      { id: randomUUID(), key: "action", value: { kind: "literal", value: "other" } },
     ]),
   ];
   const flow: DecisionFlow = {
-    id: randomUUID(),
+    id: ids.flowId,
     name: "IoT 操作判斷（範例）",
     updatedAt: now,
     nodes: decisionNodes,
     edges: [
       { id: randomUUID(), source: ids.start, target: ids.request, sourceHandle: "next" },
-      { id: randomUUID(), source: ids.request, target: ids.device, sourceHandle: "choice:yes" },
-      { id: randomUUID(), source: ids.request, target: ids.notRequest, sourceHandle: "choice:no" },
+      { id: randomUUID(), source: ids.request, target: ids.device, sourceHandle: "true" },
+      { id: randomUUID(), source: ids.request, target: ids.sharedEnd, sourceHandle: "false" },
       { id: randomUUID(), source: ids.device, target: ids.action, sourceHandle: "choice:fan" },
-      { id: randomUUID(), source: ids.device, target: ids.unknownDevice, sourceHandle: "choice:other" },
-      { id: randomUUID(), source: ids.action, target: ids.actionOn, sourceHandle: "choice:on" },
-      { id: randomUUID(), source: ids.action, target: ids.actionOff, sourceHandle: "choice:off" },
-      { id: randomUUID(), source: ids.action, target: ids.actionOther, sourceHandle: "choice:other" },
+      { id: randomUUID(), source: ids.device, target: ids.sharedEnd, sourceHandle: "choice:other" },
+      { id: randomUUID(), source: ids.action, target: ids.iotEnd, sourceHandle: "choice:on" },
+      { id: randomUUID(), source: ids.action, target: ids.iotEnd, sourceHandle: "choice:off" },
+      { id: randomUUID(), source: ids.action, target: ids.sharedEnd, sourceHandle: "choice:other" },
     ],
   };
 
-  return { flows: [flow], templates: [], flowTestSuites: [], flowDrafts: [], flowHistory: [] };
+  const initialSuite: FlowTestSuite = {
+    flowId: ids.flowId,
+    revision: randomUUID(),
+    cases: [
+      {
+        id: randomUUID(),
+        name: "明確控制風扇（開啟）",
+        input: "打開風扇",
+        expectedOutput: { iotRequest: true, device: "fan", action: "on" },
+        enabled: true,
+      },
+      {
+        id: randomUUID(),
+        name: "非 IoT 一般問句",
+        input: "今天天氣如何？",
+        expectedOutput: { iotRequest: false },
+        enabled: true,
+      },
+    ],
+    lastRun: null,
+  };
+
+  return { flows: [flow], templates: [], flowTestSuites: [initialSuite], flowDrafts: [], flowHistory: [] };
 }
 
 export class DecisionStore {

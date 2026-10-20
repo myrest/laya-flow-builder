@@ -300,7 +300,7 @@ export function flowDraftContract(store: DecisionStore) {
   const noulNode = contractDecisionNode(noulQuestion, []);
   const scoreNode = contractDecisionNode(scoreQuestion, [1]);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     model: { name: "alexdoandev/laya-multilingual-onnx", loadedBy: "API server; MCP clients must reuse the running server" },
     limits: {
       maxFlowNameLength: MAX_FLOW_NAME_LENGTH,
@@ -350,9 +350,10 @@ export function flowDraftContract(store: DecisionStore) {
       edge: { fields: { id: "string", source: "node ID", target: "node ID", sourceHandle: "valid source port ID" } },
       validation: [
         "Exactly one start and at least one end.",
-        "Every non-start node has exactly one incoming edge; each required decision branch has exactly one outgoing edge.",
-        "All nodes are reachable from start; no cycles; decision references point to upstream decision nodes.",
-        "Every end output reference points to an upstream decision node.",
+        "Start has exactly one outgoing edge from 'next'; every decision node has exactly one incoming edge.",
+        "Each required decision branch has exactly one outgoing edge; mutually exclusive branches may share an end node.",
+        "All nodes are reachable from start; no cycles; decision input references point to decision ancestors on the executed path.",
+        "End output references may point to any upstream decision; if that decision did not run on this branch, the output is null.",
         "The complete flow must pass validate_flow_draft before test or submission.",
       ],
     },

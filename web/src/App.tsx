@@ -28,6 +28,7 @@ import { removeFlowNodes } from "./flow-editing";
 
 type BlockType = "choice" | "noul" | "score" | "end" | `template:${string}`;
 type InputMode = "text" | "json";
+type Workspace = "design" | "test" | "drafts";
 
 function makeDecisionNode(type: "choice" | "noul" | "score", position: { x: number; y: number }, template?: DecisionTemplate): DecisionFlowNode {
   const question = template?.question ?? (type === "noul"
@@ -92,18 +93,22 @@ async function copyTextToClipboard(text: string): Promise<void> {
     }
   }
 
-  // Clipboard API is unavailable on LAN HTTP origins; keep a click-triggered fallback.
+  // Keep the fallback inside a modal dialog; elements outside it are inert.
   const activeElement = document.activeElement;
+  const activeDialog = activeElement instanceof HTMLElement ? activeElement.closest("dialog") : null;
+  const container = activeDialog?.open ? activeDialog : document.body;
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.setAttribute("readonly", "");
+  textarea.setAttribute("aria-hidden", "true");
   textarea.style.position = "fixed";
   textarea.style.left = "-9999px";
   textarea.style.top = "0";
   textarea.style.opacity = "0";
-  document.body.append(textarea);
+  container.append(textarea);
   let copied = false;
   try {
+    textarea.focus({ preventScroll: true });
     textarea.select();
     textarea.setSelectionRange(0, text.length);
     copied = typeof document.execCommand === "function" && document.execCommand("copy");
@@ -130,6 +135,7 @@ function AppContent() {
   const [saving, setSaving] = useState(false);
   const [flowTransitioning, setFlowTransitioning] = useState(false);
   const [pageError, setPageError] = useState("");
+  const [flowOptionsError, setFlowOptionsError] = useState("");
   const [inputMode, setInputMode] = useState<InputMode>("text");
   const [testInput, setTestInput] = useState("打開風扇");
   const [testing, setTesting] = useState(false);
@@ -137,6 +143,7 @@ function AppContent() {
   const [result, setResult] = useState<FlowTestResult | null>(null);
   const [testMode, setTestMode] = useState<"single" | "batch">("single");
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState("");
   const [inspectorValid, setInspectorValid] = useState(true);
   const [caseDraftDirty, setCaseDraftDirty] = useState(false);
   const [savingCases, setSavingCases] = useState(false);
@@ -147,6 +154,28 @@ function AppContent() {
   const [batchMount, setBatchMount] = useState(0);
   const [publishedSuite, setPublishedSuite] = useState<FlowTestSuite | null>(null);
   const publicationInFlight = useRef(false);
+  const [workspace, setWorkspace] = useState<Workspace>("design");
+  const [designPanel, setDesignPanel] = useState<"palette" | "inspector" | null>(null);
+  const apiDialog = useRef<HTMLDialogElement>(null);
+  const flowDialog = useRef<HTMLDialogElement>(null);
+  const authMenu = useRef<HTMLDetailsElement>(null);
+  const adminTokenInput = useRef<HTMLInputElement>(null);
+  const requestAdminLogin = useCallback(() => {
+    const menu = authMenu.current;
+    if (!menu) return;
+    menu.open = true;
+    menu.scrollIntoView({ block: "start" });
+    requestAnimationFrame(() => {
+      const input = adminTokenInput.current;
+      if (!input) return;
+      input.scrollIntoView({ block: "center", inline: "nearest" });
+      input.focus({ preventScroll: true });
+    });
+  }, []);
+  const selectNode = useCallback((id: string | null) => {
+    setSelectedNodeId(id);
+    setDesignPanel(id ? "inspector" : null);
+  }, []);
   const apiUrl = useMemo(() => {
     const url = new URL(window.location.origin);
     if (import.meta.env.DEV) url.port = import.meta.env.VITE_API_PORT;
@@ -198,6 +227,7 @@ function AppContent() {
       setCaseDraftDirty(false);
       setIssues(validateFlow(publishedFlow));
       setSelectedNodeId(null);
+      setDesignPanel(null);
       setInspectorValid(true);
       clearTest();
       setBatchMount((value) => value + 1);
@@ -246,6 +276,7 @@ function AppContent() {
     setFlowTransitioning(true);
     setPageError("");
     setSelectedNodeId(null);
+    setDesignPanel(null);
     setInspectorValid(true);
     try {
       const [next, validation] = await Promise.all([listFlows().then((all) => all.find((candidate) => candidate.id === id)).then((candidate) => {
@@ -273,6 +304,7 @@ function AppContent() {
     setSelectedNodeId(null);
     setSaving(true);
     setPageError("");
+    setFlowOptionsError("");
     try {
       const created = await createFlow(newFlowName.trim());
       setFlows((current) => [...current, created]);
@@ -284,8 +316,11 @@ function AppContent() {
       setCaseDraftDirty(false);
       setDirty(false);
       setIssues(validateFlow(created));
+      setWorkspace("design");
+      setDesignPanel(null);
+      flowDialog.current?.close();
     } catch (error) {
-      setPageError(error instanceof Error ? error.message : String(error));
+      setFlowOptionsError(error instanceof Error ? error.message : String(error));
     } finally {
       setFlowTransitioning(false);
       setSaving(false);
@@ -319,6 +354,7 @@ function AppContent() {
     setFlowTransitioning(true);
     setSelectedNodeId(null);
     setPageError("");
+    setFlowOptionsError("");
     setSaving(true);
     try {
       await deleteFlow(flow.id);
@@ -326,14 +362,17 @@ function AppContent() {
       setFlows(remaining);
       const next = remaining[0] ?? null;
       setCurrentFlow(next);
+      setIssues(next ? validateFlow(next) : []);
       setPublishedSuite(null);
       setCaseDraftDirty(false);
       setDirty(false);
       setSelectedNodeId(null);
       setInspectorValid(true);
-      setIssues(next ? validateFlow(next) : []);
+      setWorkspace("design");
+      setDesignPanel(null);
+      flowDialog.current?.close();
     } catch (error) {
-      setPageError(error instanceof Error ? error.message : String(error));
+      setFlowOptionsError(error instanceof Error ? error.message : String(error));
     } finally {
       setFlowTransitioning(false);
       setSaving(false);
@@ -346,14 +385,14 @@ function AppContent() {
     if (!node) return;
     const next = { ...flow, nodes: [...flow.nodes, node] };
     onChangeFlow(next);
-    setSelectedNodeId(node.id);
+    selectNode(node.id);
   }
 
   function handleDeleteNode(nodeId: string): void {
     if (!flow || flowTransitioning || publicationInFlight.current) return;
     const updated = removeFlowNodes(flow, new Set([nodeId]));
     onChangeFlow(updated);
-    setSelectedNodeId(null);
+    selectNode(null);
   }
 
   async function handleCreateTemplate(template: DecisionTemplate): Promise<void> {
@@ -394,13 +433,14 @@ function AppContent() {
   async function copyApiExample(): Promise<void> {
     if (!apiExample) return;
     setPageError("");
+    setCopyError("");
     try {
       await copyTextToClipboard(apiExample);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1400);
     } catch (error) {
       setCopied(false);
-      setPageError(error instanceof Error ? error.message : "無法自動複製。請手動選取下方 curl 指令。");
+      setCopyError(error instanceof Error ? error.message : "無法自動複製。請手動選取下方 curl 指令。");
     }
   }
 
@@ -417,39 +457,52 @@ function AppContent() {
             {flows.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
             {flows.length === 0 && <option value="">尚未建立流程</option>}
           </select>
-          <input aria-label="新流程名稱" placeholder="新流程名稱" maxLength={120} value={newFlowName} onChange={(event) => setNewFlowName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void handleCreateFlow(); }} disabled={loading || saving || savingCases || flowTransitioning} />
-          <button type="button" className="button button--subtle" onClick={() => void handleCreateFlow()} disabled={loading || saving || savingCases || flowTransitioning || newFlowName.trim().length === 0}>＋ 建立流程</button>
+          <button type="button" className="button button--subtle" onClick={() => { setFlowOptionsError(""); flowDialog.current?.showModal(); }} disabled={loading || saving || savingCases || flowTransitioning}>流程選項</button>
         </div>
         <div className="topbar__actions">
           <span className={`save-state${dirty ? " is-dirty" : ""}`} aria-live="polite">{saving ? "儲存中…" : dirty ? "未儲存" : "已儲存"}</span>
           <button type="button" className="button button--primary" onClick={() => void handleSave()} disabled={!flow || !dirty || loading || saving || savingCases || flowTransitioning || !inspectorValid}>{saving ? "儲存中…" : "儲存流程"}</button>
-          <button type="button" className="icon-button danger" aria-label="刪除目前流程" title="刪除目前流程" onClick={() => void handleDeleteFlow()} disabled={!flow || flows.length < 2 || loading || saving || savingCases || flowTransitioning}>刪除</button>
         </div>
-        <div className="admin-auth" aria-label="管理員驗證">
-          {adminToken ? <><span role="status">管理員已登入</span><button type="button" className="button button--small" onClick={logoutAdmin}>登出</button></> : <form onSubmit={(event) => { event.preventDefault(); void loginAdmin(); }}>
-            <label className="sr-only" htmlFor="admin-token">管理員權杖</label>
-            <input id="admin-token" type="password" autoComplete="current-password" value={loginToken} onChange={(event) => setLoginToken(event.target.value)} placeholder="管理員權杖" aria-describedby={authError ? "admin-auth-error" : undefined} />
-            <button type="submit" className="button button--small" disabled={authBusy || loginToken.length === 0}>{authBusy ? "驗證中…" : "登入"}</button>
-          </form>}
-          {authError && <span id="admin-auth-error" className="form-error" role="alert">{authError}</span>}
-        </div>
+        <details ref={authMenu} className="auth-menu">
+          <summary>{adminToken ? "管理員已登入" : "管理員登入"}</summary>
+          <div className="admin-auth" aria-label="管理員驗證">
+            {adminToken ? <button type="button" className="button" onClick={logoutAdmin}>登出管理員</button> : <form onSubmit={(event) => { event.preventDefault(); void loginAdmin(); }}>
+              <label className="sr-only" htmlFor="admin-token">管理員權杖</label>
+              <input ref={adminTokenInput} id="admin-token" type="password" autoComplete="current-password" value={loginToken} onChange={(event) => setLoginToken(event.target.value)} placeholder="管理員權杖" aria-describedby={authError ? "admin-auth-error" : undefined} />
+              <button type="submit" className="button" disabled={authBusy || loginToken.length === 0}>{authBusy ? "驗證中…" : "登入"}</button>
+            </form>}
+            {authError && <span id="admin-auth-error" className="form-error" role="alert">{authError}</span>}
+          </div>
+        </details>
       </header>
 
+      <nav className="workspace-nav" aria-label="工作區">
+        <div className="workspace-nav__items">
+          {([["design", "流程設計"], ["test", "測試"], ["drafts", "草稿"]] as const).map(([key, label]) => <button key={key} type="button" aria-pressed={workspace === key} aria-controls={`workspace-${key}`} onClick={() => setWorkspace(key)} disabled={flowTransitioning}>{label}</button>)}
+        </div>
+        <button type="button" className="button" onClick={() => apiDialog.current?.showModal()} disabled={!flow || flowTransitioning}>API 呼叫</button>
+      </nav>
       {pageError && <div className="alert-banner" role="alert"><span>{pageError}</span><button type="button" className="icon-button" aria-label="關閉錯誤訊息" onClick={() => setPageError("")}>×</button></div>}
 
-      <div className="workspace">
-        <aside className="palette panel" aria-label="積木面板">
-          <header className="panel__heading"><div><span className="eyebrow">建立流程</span><h2>積木</h2></div></header>
-          <p className="panel__hint">拖曳到畫布或按「＋」新增；點擊積木不會新增。</p>
+      <div id="workspace-design" className="workspace" data-panel={designPanel ?? ""} hidden={workspace !== "design"}>
+        <div className="design-tools">
+          <button type="button" className="button" aria-expanded={designPanel === "palette"} aria-controls="design-palette" onClick={() => setDesignPanel(designPanel === "palette" ? null : "palette")}>積木與範本</button>
+          <button type="button" className="button" aria-expanded={designPanel === "inspector"} aria-controls="design-inspector" onClick={() => setDesignPanel(designPanel === "inspector" ? null : "inspector")}>節點設定</button>
+        </div>
+        <aside id="design-palette" className="palette panel" aria-label="積木面板">
+          <header className="panel__heading"><h2>積木與範本</h2><button type="button" className="icon-button design-panel-close" aria-label="關閉積木面板" onClick={() => setDesignPanel(null)}>×</button></header>
+          <p className="panel__hint">拖曳到畫布或按「＋」新增。</p>
           <section className="palette__section"><h3>基本決策</h3>
             <PaletteBlock type="choice" title="單選分類" description="多個文字選項" onAdd={handleAddAt} disabled={flowTransitioning} />
             <PaletteBlock type="noul" title="是／否判斷" description="依 P(true) 門檻分流" onAdd={handleAddAt} disabled={flowTransitioning} />
             <PaletteBlock type="score" title="程度評分" description="以數值切分點分流" onAdd={handleAddAt} disabled={flowTransitioning} />
           </section>
-          <section className="palette__section"><h3>輸出</h3><PaletteBlock type="end" title="回傳 JSON" description="設定固定值或決策結果" onAdd={handleAddAt} disabled={flowTransitioning} /></section>
-          <section className="palette__section palette__templates"><div className="section-heading"><h3>我的積木範本</h3><span>{templates.length}</span></div>
+          <section className="palette__section"><h3>輸出</h3>
+            <PaletteBlock type="end" title="回傳 JSON" description="設定固定值或決策結果" onAdd={handleAddAt} disabled={flowTransitioning} />
+          </section>
+          <details className="palette__section palette__templates" open><summary>我的積木範本（{templates.length}）</summary>
             {templates.length === 0 ? <p className="muted small-copy">選取決策節點後，可儲存為範本。</p> : <>
-              <p className="muted small-copy">基本積木從預設設定開始；範本會帶入已儲存的問題與分流設定。</p>
+              <p className="muted small-copy">加入範本會建立獨立副本。</p>
               {templates.map((template) => (
                 <div className="template-row" key={template.id}>
                   <button type="button" className="template-row__add" draggable={!flowTransitioning} disabled={flowTransitioning} onDragStart={(event) => beginBlockDrag(event, `template:${template.id}`)}>
@@ -460,56 +513,90 @@ function AppContent() {
                 </div>
               ))}
             </>}
-          </section>
+          </details>
           <div className="palette__foot"><span className="status-dot" />本機推論 · 多語言模型</div>
         </aside>
 
         <section className="canvas-panel" aria-label="流程編輯區">
           <div className="canvas-toolbar"><div><strong>{selectedFlowName}</strong><span>{flow?.nodes.length ?? 0} 個節點 · {flow?.edges.length ?? 0} 條連線</span></div><span className={`validation-badge${issues.length > 0 ? " validation-badge--invalid" : dirty ? " validation-badge--dirty" : " validation-badge--valid"}`}>{issues.length > 0 ? `未完成 · ${issues.length}` : dirty ? "未儲存" : "可執行"}</span></div>
-          {loading || flowTransitioning ? <div className="canvas-placeholder"><div className="spinner" /><span>{loading ? "載入流程…" : "處理流程…"}</span></div> : flow ? <FlowCanvas flow={flow} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} onChange={onChangeFlow} onAddAt={handleAddAt} onNodeDrop={setSelectedNodeId} /> : <div className="canvas-placeholder"><strong>建立或選擇一條流程</strong><span>流程會在重新啟動後保留。</span></div>}
+          {loading || flowTransitioning ? <div className="canvas-placeholder"><div className="spinner" /><span>{loading ? "載入流程…" : "處理流程…"}</span></div> : flow ? <FlowCanvas flow={flow} selectedNodeId={selectedNodeId} active={workspace === "design"} onSelectNode={selectNode} onChange={onChangeFlow} onAddAt={handleAddAt} onNodeDrop={selectNode} /> : <div className="canvas-placeholder"><strong>建立或選擇一條流程</strong><span>流程會在重新啟動後保留。</span></div>}
           <div className="validation-strip" aria-live="polite">
-          {issues.length > 0 ? <><strong>流程尚未完成</strong><span>{issues.slice(0, 2).join("　")}{issues.length > 2 ? `　及其他 ${issues.length - 2} 項` : ""}</span></> : dirty ? <span>目前有未儲存變更；可依目前設定測試，儲存後才會保留。</span> : <span>分類與評分出口需連線；低於信心門檻時會採用指定選項並沿用其出口。</span>}
+            {issues.length > 0 ? <><strong>流程尚未完成</strong><span>{issues.slice(0, 2).join("　")}{issues.length > 2 ? `　及其他 ${issues.length - 2} 項` : ""}</span></> : dirty ? <span>目前有未儲存變更；可依目前設定測試，儲存後才會保留。</span> : <span>所有必要出口皆已連線，可切換至「測試」驗證輸出。</span>}
           </div>
         </section>
-
-        <div className="right-rail">
+        <div id="design-inspector" className="design-inspector">
+          <button type="button" className="button design-panel-close" onClick={() => setDesignPanel(null)}>返回畫布</button>
           <Inspector flow={flow ?? EMPTY_FLOW} node={selectedNode} templates={templates} onChangeFlow={onChangeFlow} onDeleteNode={handleDeleteNode} onCreateTemplate={handleCreateTemplate} onValidityChange={setInspectorValid} />
-          <section className="test-panel panel" aria-label="流程測試">
-            <header className="panel__heading"><div><span className="eyebrow">本機推論</span><h2>測試流程</h2></div><span className="model-pill">Laya</span></header>
-            <div className="test-mode-tabs" role="tablist" aria-label="測試方式">
-              <button id="test-mode-single" type="button" role="tab" aria-selected={testMode === "single"} aria-controls="single-test-panel" className={testMode === "single" ? "is-active" : ""} onClick={() => setTestMode("single")} disabled={testing || flowTransitioning}>單次測試</button>
-              <button id="test-mode-batch" type="button" role="tab" aria-selected={testMode === "batch"} aria-controls="batch-test-panel" className={testMode === "batch" ? "is-active" : ""} onClick={() => setTestMode("batch")} disabled={testing || flowTransitioning}>批次測試</button>
-            </div>
-            <div role="tabpanel" id="single-test-panel" aria-labelledby="test-mode-single" hidden={testMode !== "single"}>
-              <div className="test-panel__body">
-                <div className="input-toggle" role="group" aria-label="輸入格式"><button type="button" className={inputMode === "text" ? "is-active" : ""} onClick={() => setInputMode("text")} disabled={testing || flowTransitioning}>文字</button><button type="button" className={inputMode === "json" ? "is-active" : ""} onClick={() => setInputMode("json")} disabled={testing || flowTransitioning}>JSON</button></div>
-                <label className="field"><span>{inputMode === "text" ? "測試文字" : "JSON 輸入"}</span><textarea rows={inputMode === "text" ? 2 : 4} value={testInput} onChange={(event) => setTestInput(event.target.value)} placeholder={inputMode === "text" ? "例如：打開風扇" : '{ "text": "打開風扇" }'} disabled={testing || flowTransitioning} /></label>
-                <button type="button" className="button button--primary button--wide" onClick={() => void handleTest()} disabled={!readyToRun}>{testing ? "模型判斷中…" : "執行測試"}</button>
-                {dirty && <p className="helper-copy">測試使用目前未儲存的設定；測試不會自動儲存流程。</p>}
-                {!inspectorValid && <p className="form-error" role="alert">JSON 欄位尚未完成或格式不正確，修正後才能儲存與測試。</p>}
-                {issues.length > 0 && <ul className="issue-list">{issues.slice(0, 3).map((issue) => <li key={issue}>{issue}</li>)}</ul>}
-                {testError && <p className="form-error" role="alert">{testError}</p>}
-                {result && <div className="test-result" aria-live="polite">
-                  <div className="test-result__summary"><strong>測試結果</strong><span>{answerSummary(result)}</span></div>
-                  <ol className="trace-list">
-                    {result.trace.map((step, index) => (
-                      <li key={`${step.nodeId}-${index}`}>
-                        <div><strong>{step.label}</strong><span>{describeAnswer(step)}</span></div>
-                        <small>分支：{step.branch} · 信心 {(step.confidence * 100).toFixed(2)}% · {step.durationMs} ms</small>
-                        {(step.answer.type === "choice" || step.answer.type === "score") && <details><summary>查看機率</summary><ul>{Object.entries(step.answer.probabilities).map(([key, probability]) => <li key={key}><span>{key}</span><span>{(probability * 100).toFixed(1)}%</span></li>)}</ul></details>}
-                      </li>
-                    ))}
-                  </ol>
-                  <div className="result-output"><span>回傳 JSON</span><pre>{JSON.stringify(result.output, null, 2)}</pre></div>
-                </div>}
-              </div>
-            </div>
-            <BatchTestPanel key={`${flow?.id ?? "no-flow"}-${batchMount}`} flow={flow} publishedSuite={publishedSuite} issues={issues} inspectorValid={inspectorValid} dirty={dirty} testing={testing} onTestingChange={setTesting} onDraftDirtyChange={setCaseDraftDirty} onSavingCasesChange={setSavingCases} flowBusy={flowTransitioning} hidden={testMode !== "batch"} />
-            <FlowDraftPanel flow={flow} blocked={dirty || caseDraftDirty || testing || saving || savingCases || flowTransitioning || loading || !inspectorValid} adminAuthenticated={adminToken} onPublish={handleDraftPublish} />
-          </section>
-          <section className="api-card panel"><div className="api-card__heading"><span className="eyebrow">同網段呼叫</span><button type="button" className="button button--subtle button--small" disabled={!flow} onClick={() => void copyApiExample()}>{copied ? "已複製" : "複製 curl"}</button></div><pre className="api-card__curl" aria-label="curl 指令">{apiExample || "選擇流程後會顯示 curl 指令。"}</pre><small>POST · 只回傳流程設定的 JSON；不執行裝置操作。若無法自動複製，可手動選取上方指令。</small></section>
         </div>
       </div>
+
+      <section id="workspace-test" className="work-area test-workspace" aria-label="流程測試" hidden={workspace !== "test"}>
+        <header className="work-area__heading"><div><h1>測試流程</h1><p>{selectedFlowName} · {dirty ? "使用畫布上未儲存的版本" : "使用目前流程設定"}</p></div><span className="model-pill">Laya 本機推論</span></header>
+        <div className="test-mode-tabs" role="tablist" aria-label="測試方式">
+          <button id="test-mode-single" type="button" role="tab" aria-selected={testMode === "single"} aria-controls="single-test-panel" className={testMode === "single" ? "is-active" : ""} onClick={() => setTestMode("single")} disabled={testing || flowTransitioning}>單次測試</button>
+          <button id="test-mode-batch" type="button" role="tab" aria-selected={testMode === "batch"} aria-controls="batch-test-panel" className={testMode === "batch" ? "is-active" : ""} onClick={() => setTestMode("batch")} disabled={testing || flowTransitioning}>批次測試</button>
+        </div>
+        <div role="tabpanel" id="single-test-panel" aria-labelledby="test-mode-single" hidden={testMode !== "single"}>
+          <div className="single-test-layout">
+            <section className="test-input panel">
+              <h2>測試輸入</h2>
+              <div className="input-toggle" role="group" aria-label="輸入格式"><button type="button" className={inputMode === "text" ? "is-active" : ""} onClick={() => setInputMode("text")} disabled={testing || flowTransitioning}>文字</button><button type="button" className={inputMode === "json" ? "is-active" : ""} onClick={() => setInputMode("json")} disabled={testing || flowTransitioning}>JSON</button></div>
+              <label className="field"><span>{inputMode === "text" ? "測試文字" : "JSON 輸入"}</span><textarea rows={6} value={testInput} onChange={(event) => setTestInput(event.target.value)} placeholder={inputMode === "text" ? "例如：打開風扇" : '{ "text": "打開風扇" }'} disabled={testing || flowTransitioning} /></label>
+              <button type="button" className="button button--primary button--wide" onClick={() => void handleTest()} disabled={!readyToRun}>{testing ? "模型判斷中…" : "執行測試"}</button>
+              <p className="helper-copy">只回傳判斷結果，不操作裝置，也不會自動儲存流程。</p>
+              {!inspectorValid && <p className="form-error" role="alert">節點欄位尚未完成或格式不正確，請回「流程設計」修正。</p>}
+              {issues.length > 0 && <ul className="issue-list">{issues.map((issue) => <li key={issue}>{issue}</li>)}</ul>}
+              {testError && <p className="form-error" role="alert">{testError}</p>}
+            </section>
+            <section className="test-result panel" aria-live="polite">
+              <div className="test-result__summary"><h2>執行結果</h2><span>{result ? answerSummary(result) : testing ? "模型判斷中…" : "尚未執行"}</span></div>
+              {result ? <>
+                <div className="result-output"><h3>回傳 JSON</h3><pre>{JSON.stringify(result.output, null, 2)}</pre></div>
+                <h3>決策追蹤</h3>
+                <ol className="trace-list">
+                  {result.trace.map((step, index) => (
+                    <li key={`${step.nodeId}-${index}`}>
+                      <div><strong>{step.label}</strong><span>{describeAnswer(step)}</span></div>
+                      <small>分支：{step.branch} · 信心 {(step.confidence * 100).toFixed(2)}% · {step.durationMs} ms</small>
+                      {(step.answer.type === "choice" || step.answer.type === "score") && <details><summary>查看機率</summary><ul>{Object.entries(step.answer.probabilities).map(([key, probability]) => <li key={key}><span>{key}</span><span>{(probability * 100).toFixed(1)}%</span></li>)}</ul></details>}
+                    </li>
+                  ))}
+                </ol>
+              </> : <p className="muted">執行後會顯示輸出 JSON、經過的節點、分支與信心值。</p>}
+            </section>
+          </div>
+        </div>
+        <BatchTestPanel key={`${flow?.id ?? "no-flow"}-${batchMount}`} flow={flow} publishedSuite={publishedSuite} issues={issues} inspectorValid={inspectorValid} dirty={dirty} testing={testing} onTestingChange={setTesting} onDraftDirtyChange={setCaseDraftDirty} onSavingCasesChange={setSavingCases} flowBusy={flowTransitioning} hidden={testMode !== "batch"} />
+      </section>
+
+      <div id="workspace-drafts" className="work-area draft-workspace" hidden={workspace !== "drafts"}>
+        <FlowDraftPanel flow={flow} blocked={dirty || caseDraftDirty || testing || saving || savingCases || flowTransitioning || loading || !inspectorValid} adminAuthenticated={adminToken} onRequestAdminLogin={requestAdminLogin} onPublish={handleDraftPublish} />
+      </div>
+
+      <dialog ref={apiDialog} className="api-drawer" aria-labelledby="api-title" onClick={(event) => { if (event.target === event.currentTarget) event.currentTarget.close(); }}>
+        <section className="api-drawer__content">
+          <header className="panel__heading"><h2 id="api-title">API 呼叫</h2><button type="button" className="button" autoFocus onClick={() => apiDialog.current?.close()}>關閉</button></header>
+          <p>{selectedFlowName}</p>
+          <p className="helper-copy">呼叫使用已儲存的正式流程。只回傳設定的 JSON，不操作裝置。</p>
+          {dirty && <p className="form-error">畫布有未儲存變更；請先儲存，API 才會使用新設定。</p>}
+          <pre className="api-card__curl" aria-label="curl 指令">{apiExample || "選擇流程後會顯示 curl 指令。"}</pre>
+          <button type="button" className="button button--primary" disabled={!flow} onClick={() => void copyApiExample()}>{copied ? "已複製" : "複製 curl"}</button>
+          {copyError && <p className="form-error" role="alert">{copyError}</p>}
+          <p className="helper-copy">若無法自動複製，可手動選取上方指令。不要在呼叫中放入管理員憑證。</p>
+        </section>
+      </dialog>
+      <dialog ref={flowDialog} className="flow-options" aria-labelledby="flow-options-title" onClick={(event) => { if (event.target === event.currentTarget) event.currentTarget.close(); }}>
+        <section>
+          <header className="panel__heading"><h2 id="flow-options-title">流程選項</h2><button type="button" className="button" onClick={() => flowDialog.current?.close()}>關閉</button></header>
+          {flowOptionsError && <p className="form-error" role="alert">{flowOptionsError}</p>}
+          <form onSubmit={(event) => { event.preventDefault(); void handleCreateFlow(); }}>
+            <label className="field"><span>新流程名稱</span><input autoFocus maxLength={120} value={newFlowName} onChange={(event) => setNewFlowName(event.target.value)} disabled={loading || saving || savingCases || flowTransitioning} /></label>
+            <button type="submit" className="button button--primary" disabled={loading || saving || savingCases || flowTransitioning || newFlowName.trim().length === 0}>＋ 建立流程</button>
+          </form>
+          <p className="helper-copy">目前流程：{selectedFlowName}</p>
+          <button type="button" className="button button--danger" onClick={() => void handleDeleteFlow()} disabled={!flow || flows.length < 2 || loading || saving || savingCases || flowTransitioning}>刪除目前流程</button>
+        </section>
+      </dialog>
     </main>
   );
 }

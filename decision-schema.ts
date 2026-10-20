@@ -1,8 +1,8 @@
 import type { Answer, Question } from "../laya/src/types.js";
 import type { DecisionFlow, DecisionNodeTrace, DecisionStoreData, DecisionTemplate, EndFlowNode, FlowEdge, FlowNode, FlowTestCase, FlowTestCaseResult, FlowTestRun, FlowTestSuite, FlowTestResult, FlowDraft, FlowDraftRun, FlowHistoryEntry, JsonValue } from "./decision-types.js";
 import { DEFAULT_MIN_CONFIDENCE, MAX_FLOW_TEST_CASES, MAX_FLOW_TEST_NAME_LENGTH } from "./decision-types.js";
-import { getDefaultLowConfidenceBranch } from "./decision-engine.js";
-import { isRecord } from "./decision-guards.js";
+import { getDefaultLowConfidenceBranch, normalizedConfidence } from "./decision-engine.js";
+import { isJsonValue, isRecord } from "./decision-guards.js";
 
 function fail(path: string): never {
   throw new Error(`Invalid decision system data at ${path}.`);
@@ -103,13 +103,6 @@ function parseNode(value: unknown, index: number): FlowNode {
     return node;
   }
   return fail(`${path}.type`);
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(isJsonValue);
-  return isRecord(value) && Object.values(value).every(isJsonValue);
 }
 
 function parseEdge(value: unknown, index: number): FlowEdge {
@@ -329,14 +322,6 @@ function parseAnswer(value: unknown, path: string): Answer {
   return fail(`${path}.type`);
 }
 
-function confidenceFromProbabilities(probabilities: number[]): number {
-  if (probabilities.length < 2) return 1;
-  let entropy = 0;
-  for (const probability of probabilities) entropy -= probability * Math.log(Math.max(probability, 1e-12));
-  return Math.max(0, Math.min(1, 1 - entropy / Math.log(probabilities.length)));
-}
-
-
 export function parseFlowTestResult(value: unknown): FlowTestResult {
   if (!isRecord(value) || !isRecord(value.output) || !Array.isArray(value.trace) || typeof value.durationMs !== "number" || !Number.isFinite(value.durationMs)) fail("test-result");
   if (value.status !== undefined && value.status !== "completed") fail("test-result.status");
@@ -350,7 +335,7 @@ export function parseFlowTestResult(value: unknown): FlowTestResult {
     if (!isRecord(entry) || typeof entry.nodeId !== "string" || typeof entry.label !== "string" || !isJsonValue(entry.value) || typeof entry.lowConfidenceFallback !== "boolean" || typeof entry.branch !== "string" || typeof entry.durationMs !== "number" || !Number.isFinite(entry.durationMs)) fail(path);
     const answer = parseAnswer(entry.answer, `${path}.answer`);
     const confidence = entry.confidence === undefined
-      ? answer.type === "noul" ? confidenceFromProbabilities([answer.noul, 1 - answer.noul]) : answer.confidence
+      ? answer.type === "noul" ? normalizedConfidence([answer.noul, 1 - answer.noul]) : answer.confidence
       : entry.confidence;
     if (typeof confidence !== "number" || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) fail(`${path}.confidence`);
     return {

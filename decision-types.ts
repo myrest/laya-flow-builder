@@ -39,6 +39,7 @@ export interface EndOutputField {
   value: OutputValue;
 }
 
+
 export interface EndFlowNode {
   id: string;
   type: "end";
@@ -46,8 +47,7 @@ export interface EndFlowNode {
   data: { label: string; fields: EndOutputField[] };
 }
 
-export type DecisionFlowNodeData = StartFlowNode | DecisionFlowNode | EndFlowNode;
-export type FlowNode = DecisionFlowNodeData;
+export type FlowNode = StartFlowNode | DecisionFlowNode | EndFlowNode;
 
 export interface FlowEdge {
   id: string;
@@ -166,7 +166,6 @@ export interface DecisionStoreData {
 export interface BranchPort {
   id: string;
   label: string;
-  optional?: boolean;
 }
 
 export interface DecisionNodeTrace {
@@ -189,7 +188,6 @@ export interface FlowTestResult {
 
 export const MAX_FLOW_NODES = 200;
 export const MAX_FLOW_NAME_LENGTH = 120;
-export const MAX_TEMPLATE_NAME_LENGTH = 120;
 export const MAX_FLOW_TEST_CASES = 200;
 export const MAX_FLOW_TEST_NAME_LENGTH = 120;
 export const MAX_QUESTION_OPTIONS = 64;

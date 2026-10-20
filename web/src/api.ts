@@ -1,7 +1,7 @@
 import type { Question } from "../../../laya/src/types.js";
 import type { DecisionFlow, DecisionTemplate, FlowDraft, FlowDraftPreview, FlowHistoryEntry, FlowTestCase, FlowTestResult, FlowTestSuite } from "../../decision-types";
 import { isRecord } from "../../decision-guards";
-import { parseDecisionFlow, parseDecisionStoreData, parseFlowDraft, parseFlowHistoryEntry, parseFlowTestResult, parseFlowTestSuite, parseJsonObject } from "../../decision-schema";
+import { parseDecisionFlow, parseDecisionStoreData, parseFlowDraft, parseFlowHistoryEntry, parseFlowTestResult, parseFlowTestSuite } from "../../decision-schema";
 
 const ADMIN_TOKEN_KEY = "laya-admin-token";
 
@@ -61,21 +61,6 @@ export async function createFlowDraft(sourceFlowId?: string, name?: string): Pro
 export async function getFlowDraft(id: string): Promise<FlowDraft> {
   return parseFlowDraft(await request(`/api/flow-drafts/${encodeURIComponent(id)}`));
 }
-
-export async function updateFlowDraft(id: string, revision: string, value: { flow?: DecisionFlow; cases?: FlowTestCase[] }): Promise<FlowDraft> {
-  return parseFlowDraft(await request(`/api/flow-drafts/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ revision, ...value }) }));
-}
-
-export async function validateFlowDraft(id: string, revision: string): Promise<{ issues: string[] }> {
-  const value = await request(`/api/flow-drafts/${encodeURIComponent(id)}/validate`, { method: "POST", body: JSON.stringify({ revision }) });
-  if (!isRecord(value) || !Array.isArray(value.issues) || !value.issues.every((item) => typeof item === "string")) throw new Error("Invalid draft validation response.");
-  return { issues: value.issues };
-}
-
-export async function testFlowDraft(id: string, revision: string, input: unknown): Promise<FlowTestResult> {
-  return parseFlowTestResult(await request(`/api/flow-drafts/${encodeURIComponent(id)}/test`, { method: "POST", body: JSON.stringify({ revision, input }) }));
-}
-
 export async function runFlowDraftBatch(id: string, revision: string): Promise<FlowDraft> {
   return parseFlowDraft(await request(`/api/flow-drafts/${encodeURIComponent(id)}/test-batch`, { method: "POST", body: JSON.stringify({ revision }) }));
 }
@@ -136,10 +121,6 @@ export async function listFlows(): Promise<DecisionFlow[]> {
   return parseDecisionStoreData({ flows: value, templates: [] }).flows;
 }
 
-export async function getFlow(id: string): Promise<DecisionFlow> {
-  return parseDecisionFlow(await request(`/api/flows/${encodeURIComponent(id)}`));
-}
-
 export async function createFlow(name: string): Promise<DecisionFlow> {
   return parseDecisionFlow(await request("/api/flows", { method: "POST", body: JSON.stringify({ name }) }));
 }
@@ -190,7 +171,6 @@ export async function testFlow(flow: DecisionFlow, input: unknown): Promise<Flow
 export async function getFlowTestSuite(flowId: string): Promise<FlowTestSuite> {
   return parseFlowTestSuite(await request(`/api/flows/${encodeURIComponent(flowId)}/test-cases`));
 }
-
 export async function saveFlowTestCases(flowId: string, revision: string, cases: FlowTestCase[]): Promise<FlowTestSuite> {
   return parseFlowTestSuite(await request(`/api/flows/${encodeURIComponent(flowId)}/test-cases`, { method: "PUT", body: JSON.stringify({ revision, cases }) }));
 }
@@ -202,9 +182,6 @@ export async function runFlowTestBatch(flow: DecisionFlow, caseIds?: string[]): 
   }));
 }
 
-export async function runFlow(id: string, input: unknown): Promise<Record<string, unknown>> {
-  return parseJsonObject(await request(`/api/flows/${encodeURIComponent(id)}/run`, { method: "POST", body: JSON.stringify({ input }) }));
-}
 
 export function choiceQuestion(): Question {
   return { type: "choice", instructions: "要判斷什麼？", criteria: { yes: "符合", no: "不符合", other: "其他／無法判斷" } };

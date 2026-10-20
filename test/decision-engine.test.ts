@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { getBranchPorts, runFlow, scorePortFor, scoreRanges, validateFlow } from "../decision-engine.js";
+import { getAncestorDecisions, getBranchPorts, runFlow, scorePortFor, scoreRanges, validateFlow } from "../decision-engine.js";
 import { runFlowTestCases } from "../flow-test-runner.js";
 import { flowRevision } from "../flow-test-utils.js";
 import { parseDecisionStoreData, parseFlowTestCases } from "../decision-schema.js";
@@ -59,6 +59,22 @@ function branchFlow(): DecisionFlow {
 test("a complete decision tree validates and every choice output has one route", () => {
   assert.deepEqual(validateFlow(branchFlow()), []);
 });
+test("duplicate node IDs are rejected before inference", async () => {
+  const flow = branchFlow();
+  const end = flow.nodes.find((node) => node.id === "yes-end");
+  assert.ok(end && end.type === "end");
+  flow.nodes.push({ ...structuredClone(end), position: { x: 700, y: -80 } });
+  assert.ok(validateFlow(flow).some((message) => message.includes("節點識別碼重複")));
+  let calls = 0;
+  await assert.rejects(runFlow(flow, "input", {
+    async systemOne() {
+      calls++;
+      throw new Error("inference must not run");
+    },
+  }), /流程尚未完成/);
+  assert.equal(calls, 0);
+});
+
 
 test("end output references execute independently of node array order", async () => {
   const flow = branchFlow();
@@ -68,6 +84,94 @@ test("end output references execute independently of node array order", async ()
     type: "choice", choice: "no", probabilities: { yes: 0.1, no: 0.9 }, confidence: 0.8, rl_agent: { act_probability: 0.9 },
   }));
   assert.deepEqual(result.output, { decision: "no" });
+});
+
+test("shared End resolves only the selected branch and rejects non-ancestor references", async () => {
+  const flow = branchFlow();
+  flow.nodes = flow.nodes.filter((node) => node.id !== "no-end");
+  flow.nodes.push(choiceNode("left", "Left", -80), choiceNode("right", "Right", 80));
+  const end = flow.nodes.find((node) => node.id === "yes-end");
+  assert.ok(end && end.type === "end");
+  end.data.fields = ["decision", "left", "right"].map((nodeId) => ({
+    id: nodeId, key: nodeId, value: { kind: "decision", nodeId },
+  }));
+  flow.edges = [
+    { id: "start-edge", source: "start", target: "decision", sourceHandle: "next" },
+    { id: "left-edge", source: "decision", target: "left", sourceHandle: "choice:yes" },
+    { id: "right-edge", source: "decision", target: "right", sourceHandle: "choice:no" },
+    ...["left", "right"].flatMap((source) => ["yes", "no"].map((choice) => ({
+      id: `${source}-${choice}`, source, target: end.id, sourceHandle: `choice:${choice}`,
+    }))),
+  ];
+  assert.deepEqual(validateFlow(flow), []);
+  assert.deepEqual(getAncestorDecisions(flow, end.id).map((node) => node.id), ["left", "right", "decision"]);
+  for (const choice of ["yes", "no"]) {
+    const result = await runFlow(flow, "input", mockLaya({
+      type: "choice", choice, probabilities: { yes: choice === "yes" ? 0.9 : 0.1, no: choice === "no" ? 0.9 : 0.1 },
+      confidence: 0.8, rl_agent: { act_probability: 0.9 },
+    }));
+    assert.equal(result.status, "completed");
+    assert.deepEqual(result.trace.map((entry) => entry.nodeId), ["decision", choice === "yes" ? "left" : "right"]);
+    assert.deepEqual(result.output, {
+      decision: choice, left: choice === "yes" ? "yes" : null, right: choice === "no" ? "no" : null,
+    });
+  }
+  flow.nodes.push({
+    id: "right-only-end", type: "end", position: { x: 700, y: 80 },
+    data: { label: "Right only", fields: [{ id: "left", key: "left", value: { kind: "decision", nodeId: "left" } }] },
+  });
+  flow.edges = flow.edges.map((edge) => edge.id === "right-no" ? { ...edge, target: "right-only-end" } : edge);
+  assert.ok(validateFlow(flow).some((message) => message.includes("Right only") && message.includes("必須位於此節點上游")));
+  let calls = 0;
+  await assert.rejects(runFlow(flow, "input", {
+    async systemOne() {
+      calls++;
+      throw new Error("inference must not run");
+    },
+  }), /流程尚未完成/);
+  assert.equal(calls, 0);
+});
+
+test("ancestor lookup preserves breadth-first order, skips missing parents and terminates cycles", () => {
+  const flow = branchFlow();
+  flow.edges.push(
+    { id: "missing-parent", source: "missing", target: "no-end", sourceHandle: "next" },
+    { id: "cycle", source: "no-end", target: "decision", sourceHandle: "next" },
+    { id: "missing-link", source: "decision", target: "unknown-target", sourceHandle: "next" },
+  );
+  assert.deepEqual(getAncestorDecisions(flow, "no-end").map((node) => node.id), ["decision"]);
+  assert.deepEqual(getAncestorDecisions(flow, "decision").map((node) => node.id), ["decision"]);
+  assert.deepEqual(getAncestorDecisions(flow, "unknown-target").map((node) => node.id), ["decision"]);
+  assert.deepEqual(getAncestorDecisions(flow, "absent"), []);
+});
+
+test("a legal 48-node graph supports 64 options per decision converging on one End", () => {
+  const flow = branchFlow();
+  flow.nodes = flow.nodes.filter((node) => node.type !== "decision" && node.id !== "no-end");
+  flow.edges = [{ id: "entry", source: "start", target: "decision-0", sourceHandle: "next" }];
+  const criteria = Object.fromEntries(Array.from({ length: 64 }, (_, index) => [`option-${index}`, `Option ${index}`]));
+  for (let index = 0; index < 46; index++) {
+    const node = choiceNode(`decision-${index}`, `Decision ${index}`, index * 100);
+    assert.ok(node.type === "decision");
+    node.data.question = { type: "choice", instructions: "Choose", criteria };
+    node.data.lowConfidenceBranch = "choice:option-0";
+    node.data.inputNodeIds = index === 0 ? [] : [`decision-${index - 1}`];
+    flow.nodes.push(node);
+    for (let option = 0; option < 64; option++) {
+      flow.edges.push({
+        id: `${index}-${option}`, source: node.id, sourceHandle: `choice:option-${option}`,
+        target: option === 0 && index < 45 ? `decision-${index + 1}` : "yes-end",
+      });
+    }
+  }
+  const end = flow.nodes.find((node) => node.id === "yes-end");
+  assert.ok(end && end.type === "end");
+  end.data.fields = ["decision-0", "decision-45"].map((nodeId) => ({
+    id: nodeId, key: nodeId, value: { kind: "decision", nodeId },
+  }));
+  assert.equal(flow.nodes.length, 48);
+  assert.equal(flow.edges.length, 2945);
+  assert.deepEqual(validateFlow(flow), []);
 });
 
 test("invalid end output references reject before model inference", async () => {
@@ -584,6 +688,73 @@ test("applying a draft atomically replaces cases while preserving live identity 
     assert.deepEqual(restored.suite.cases, [originalCase]);
     assert.equal(restored.suite.lastRun, null);
     assert.equal(store.listHistory(source.id).length, 2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the sample follows one selected path and lets mutually exclusive branches share an End", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "laya-sequential-flow-"));
+  try {
+    const store = await DecisionStore.open(path.join(directory, "flows.json"));
+    const flow = store.listFlows()[0];
+    assert.ok(flow);
+    assert.equal(flow.name, "IoT 操作判斷（範例）");
+    assert.deepEqual(validateFlow(flow), []);
+
+    const runWithAnswers = async (answers: Answer[]) => {
+      const questionsSeen: Question[] = [];
+      const result = await runFlow(flow, "test input", {
+        async systemOne<Q extends Record<string, Question>>(_state: unknown, questions: Q): Promise<SystemOneResult<Q>> {
+          const question = Object.values(questions)[0];
+          assert.ok(question);
+          questionsSeen.push(question);
+          const answer = answers[questionsSeen.length - 1];
+          assert.ok(answer, "the engine must not run an unselected decision");
+          const returnedAnswers = Object.fromEntries(Object.keys(questions).map((key) => [key, answer])) as SystemOneResult<Q>["answers"];
+          return { model: "laya", answers: returnedAnswers, usage: { input_tokens: 1, output_tokens: 0 } };
+        },
+      });
+      return { result, questionsSeen };
+    };
+
+    const gateYes: Answer = { type: "noul", noul: 0.95, rl_agent: { act_probability: 0.95 } };
+    const gateNo: Answer = { type: "noul", noul: 0.05, rl_agent: { act_probability: 0.05 } };
+    const fan: Answer = { type: "choice", choice: "fan", probabilities: { fan: 0.9, other: 0.1 }, confidence: 0.8, rl_agent: { act_probability: 0.9 } };
+    const on: Answer = { type: "choice", choice: "on", probabilities: { on: 0.9, off: 0.05, other: 0.05 }, confidence: 0.8, rl_agent: { act_probability: 0.9 } };
+    const otherDevice: Answer = { type: "choice", choice: "other", probabilities: { fan: 0.1, other: 0.9 }, confidence: 0.8, rl_agent: { act_probability: 0.9 } };
+    const otherAction: Answer = { type: "choice", choice: "other", probabilities: { on: 0.05, off: 0.05, other: 0.9 }, confidence: 0.8, rl_agent: { act_probability: 0.9 } };
+
+    const success = await runWithAnswers([gateYes, fan, on]);
+    assert.deepEqual(success.result.output, { iotRequest: true, device: "fan", action: "on" });
+    assert.deepEqual(success.questionsSeen.map((question) => question.type), ["noul", "choice", "choice"]);
+    assert.equal(success.result.trace.length, 3);
+
+    const notIot = await runWithAnswers([gateNo]);
+    assert.deepEqual(notIot.result.output, { iotRequest: false });
+    assert.equal(notIot.result.trace.length, 1);
+
+    const unsupportedDevice = await runWithAnswers([gateYes, otherDevice]);
+    assert.deepEqual(unsupportedDevice.result.output, { iotRequest: false });
+    assert.equal(unsupportedDevice.result.trace.length, 2);
+
+    const unsupportedAction = await runWithAnswers([gateYes, fan, otherAction]);
+    assert.deepEqual(unsupportedAction.result.output, { iotRequest: false });
+    assert.equal(unsupportedAction.result.trace.length, 3);
+
+    const fanOutFlow = structuredClone(flow);
+    const gate = fanOutFlow.nodes.find((node) => node.type === "decision" && node.data.label.includes("是否為 IoT 操作"));
+    const sharedEnd = fanOutFlow.nodes.find((node) => node.type === "end" && node.data.label.includes("不支援"));
+    assert.ok(gate && gate.type === "decision" && sharedEnd && sharedEnd.type === "end");
+    fanOutFlow.edges.push({ id: "fan-out", source: gate.id, target: sharedEnd.id, sourceHandle: "true" });
+    assert.ok(validateFlow(fanOutFlow).some((message) => message.includes("只能連接一個下一步")));
+
+    const mergedDecisionFlow = structuredClone(flow);
+    const mergeGate = mergedDecisionFlow.nodes.find((node) => node.type === "decision" && node.data.label.includes("是否為 IoT 操作"));
+    const device = mergedDecisionFlow.nodes.find((node) => node.type === "decision" && node.data.label.includes("識別裝置"));
+    assert.ok(mergeGate && mergeGate.type === "decision" && device && device.type === "decision");
+    mergedDecisionFlow.edges.push({ id: "second-parent", source: mergeGate.id, target: device.id, sourceHandle: "false" });
+    assert.ok(validateFlow(mergedDecisionFlow).some((message) => message.includes("必須且只能有一個上游節點")));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

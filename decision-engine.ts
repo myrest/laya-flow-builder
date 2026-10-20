@@ -25,9 +25,6 @@ export class DecisionFlowError extends Error {
 }
 
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
 
 function isQuestion(value: unknown): value is Question {
   if (!isRecord(value) || (typeof value.instructions !== "string" && !isRecord(value.instructions)) || (typeof value.instructions === "string" && value.instructions.trim().length === 0)) return false;
@@ -40,10 +37,6 @@ function isQuestion(value: unknown): value is Question {
     return Array.isArray(value.criteria) && value.criteria.length >= 2 && value.criteria.length <= MAX_QUESTION_OPTIONS && value.criteria.every((item) => typeof item === "string" && item.trim().length > 0);
   }
   return value.type === "noul" && (value.criteria === undefined || isRecord(value.criteria));
-}
-
-function decisionNode(node: FlowNode): node is DecisionFlowNode {
-  return node.type === "decision";
 }
 
 export function getBranchPorts(node: DecisionFlowNode): BranchPort[] {
@@ -91,6 +84,45 @@ function issue(issues: string[], node: FlowNode, message: string): void {
   issues.push(`${node.data.label || node.id}: ${message}`);
 }
 
+function ancestorDecisionIds(
+  nodeById: ReadonlyMap<string, FlowNode>,
+  incoming: ReadonlyMap<string, FlowEdge[]>,
+  nodeId: string,
+): Set<string> {
+  const ancestors = new Set<string>();
+  const queue: string[] = [];
+  const visited = new Set<string>();
+  const enqueueParents = (id: string): void => {
+    const parents = incoming.get(id);
+    if (!parents) return;
+    for (const edge of parents) {
+      if (visited.has(edge.source)) continue;
+      visited.add(edge.source);
+      queue.push(edge.source);
+    }
+  };
+  enqueueParents(nodeId);
+  for (let index = 0; index < queue.length; index++) {
+    const currentId = queue[index]!;
+    const node = nodeById.get(currentId);
+    if (!node) continue;
+    if (node.type === "decision") ancestors.add(node.id);
+    enqueueParents(currentId);
+  }
+  return ancestors;
+}
+
+export function getAncestorDecisions(flow: DecisionFlow, nodeId: string): DecisionFlowNode[] {
+  const nodeById = new Map<string, FlowNode>(flow.nodes.map((node) => [node.id, node]));
+  const incoming = new Map<string, FlowEdge[]>();
+  for (const edge of flow.edges) {
+    const parents = incoming.get(edge.target);
+    if (parents) parents.push(edge);
+    else incoming.set(edge.target, [edge]);
+  }
+  return Array.from(ancestorDecisionIds(nodeById, incoming, nodeId), (id) => nodeById.get(id) as DecisionFlowNode);
+}
+
 export function validateFlow(flow: DecisionFlow): string[] {
   const issues: string[] = [];
   if (!isRecord(flow) || typeof flow.id !== "string" || typeof flow.name !== "string") return ["流程資料格式不正確。"];
@@ -108,21 +140,21 @@ export function validateFlow(flow: DecisionFlow): string[] {
     if (ids.has(node.id)) issues.push(`節點識別碼重複：${node.id}。`);
     ids.add(node.id);
     nodeById.set(node.id, node);
-    if (!isRecord(node.position) || !isFiniteNumber(node.position.x) || !isFiniteNumber(node.position.y)) issue(issues, node, "畫布位置不正確。");
+    if (!isRecord(node.position) || typeof node.position.x !== "number" || !Number.isFinite(node.position.x) || typeof node.position.y !== "number" || !Number.isFinite(node.position.y)) issue(issues, node, "畫布位置不正確。");
     if (!isRecord(node.data) || typeof node.data.label !== "string" || node.data.label.trim().length === 0) issue(issues, node, "請設定節點名稱。");
     if (node.type === "decision") {
       if (!isQuestion(node.data.question)) issue(issues, node, "題目格式不正確，請檢查題型、說明與選項。");
       if (!Array.isArray(node.data.inputNodeIds) || node.data.inputNodeIds.length > MAX_INPUT_NODE_REFS || node.data.inputNodeIds.some((id) => typeof id !== "string")) {
         issue(issues, node, `前置結果引用最多 ${MAX_INPUT_NODE_REFS} 個。`);
       }
-      if (!isFiniteNumber(node.data.trueThreshold) || node.data.trueThreshold < 0 || node.data.trueThreshold > 1) issue(issues, node, "是非題門檻必須介於 0 與 1。");
-      if (!isFiniteNumber(node.data.minConfidence) || node.data.minConfidence < 0 || node.data.minConfidence > 1) {
+      if (typeof node.data.trueThreshold !== "number" || !Number.isFinite(node.data.trueThreshold) || node.data.trueThreshold < 0 || node.data.trueThreshold > 1) issue(issues, node, "是非題門檻必須介於 0 與 1。");
+      if (typeof node.data.minConfidence !== "number" || !Number.isFinite(node.data.minConfidence) || node.data.minConfidence < 0 || node.data.minConfidence > 1) {
         issue(issues, node, "最低信心門檻必須介於 0 與 1。");
       }
       if (typeof node.data.lowConfidenceBranch !== "string" || !getBranchPorts(node).some((port) => port.id === node.data.lowConfidenceBranch)) {
         issue(issues, node, "低信心預設必須是此題型的有效出口。");
       }
-      if (!Array.isArray(node.data.scoreThresholds) || node.data.scoreThresholds.some((value) => !isFiniteNumber(value))) issue(issues, node, "評分切分點必須是有限數值。");
+      if (!Array.isArray(node.data.scoreThresholds) || node.data.scoreThresholds.some((value) => typeof value !== "number" || !Number.isFinite(value))) issue(issues, node, "評分切分點必須是有限數值。");
       else if (node.data.question?.type === "score") {
         const max = node.data.question.criteria.length - 1;
         const thresholds = node.data.scoreThresholds;
@@ -157,7 +189,9 @@ export function validateFlow(flow: DecisionFlow): string[] {
 
   const incoming = new Map<string, FlowEdge[]>();
   const outgoing = new Map<string, FlowEdge[]>();
+  const edgesByPort = new Map<string, FlowEdge[]>();
   const usedPorts = new Set<string>();
+  const usedEdgeKeys = new Set<string>();
   const edgeIds = new Set<string>();
   for (const edge of flow.edges) {
     if (!isRecord(edge) || typeof edge.id !== "string" || typeof edge.source !== "string" || typeof edge.target !== "string" || typeof edge.sourceHandle !== "string") {
@@ -174,34 +208,56 @@ export function validateFlow(flow: DecisionFlow): string[] {
     }
     if (target.type === "start") issues.push("起點不能有輸入連線。");
     if (source.type === "end") issues.push("結束節點不能再連到其他節點。");
-    const portKey = `${edge.source}\u0000${edge.sourceHandle}`;
-    if (usedPorts.has(portKey)) issues.push(`節點「${source.data.label}」的出口「${edge.sourceHandle}」連到多個節點；每個出口只能接一個下一步。`);
-    usedPorts.add(portKey);
     if (source.type === "start" && edge.sourceHandle !== "next") issues.push("起點只能使用 next 出口。");
     if (source.type === "decision" && !getBranchPorts(source).some((port) => port.id === edge.sourceHandle)) {
       issue(issues, source, edge.sourceHandle === "uncertain"
         ? "舊的「信心不足」出口已移除；請改用有效選項並指定低信心預設。"
         : `連線使用了不存在的出口「${edge.sourceHandle}」。`);
     }
-    incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge]);
-    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge]);
+
+    const edgeKey = `${edge.source}\u0000${edge.sourceHandle}\u0000${edge.target}`;
+    if (usedEdgeKeys.has(edgeKey)) issues.push(`連線重複：從節點「${source.data.label}」的出口「${edge.sourceHandle}」到節點「${target.data.label}」。`);
+    usedEdgeKeys.add(edgeKey);
+
+    const portKey = `${edge.source}\u0000${edge.sourceHandle}`;
+    usedPorts.add(portKey);
+    const portEdges = edgesByPort.get(portKey);
+    if (portEdges) portEdges.push(edge);
+    else edgesByPort.set(portKey, [edge]);
+    const parents = incoming.get(edge.target);
+    if (parents) parents.push(edge);
+    else incoming.set(edge.target, [edge]);
+    const children = outgoing.get(edge.source);
+    if (children) children.push(edge);
+    else outgoing.set(edge.source, [edge]);
+  }
+
+  for (const [, portEdges] of edgesByPort) {
+    if (portEdges.length > 1) {
+      const source = nodeById.get(portEdges[0]!.source);
+      issues.push(`節點「${source?.data.label ?? portEdges[0]!.source}」的出口「${portEdges[0]!.sourceHandle}」只能連接一個下一步。`);
+    }
   }
 
   for (const node of flow.nodes) {
     const parents = incoming.get(node.id) ?? [];
-    if (node.type === "start" && parents.length > 0) issue(issues, node, "起點不能有上游節點。");
-    if (node.type !== "start" && parents.length !== 1) issue(issues, node, "每個非起點節點必須且只能有一個上游節點。");
-    if (node.type === "start" && (outgoing.get(node.id) ?? []).length !== 1) issue(issues, node, "起點必須連到一個下一步。");
-    if (node.type === "decision") {
+    const children = outgoing.get(node.id) ?? [];
+    if (node.type === "start") {
+      if (parents.length > 0) issue(issues, node, "起點不能有上游節點。");
+      if (children.length !== 1) issue(issues, node, "起點必須且只能連到一個下一步。");
+    } else if (node.type === "end") {
+      if (parents.length === 0) issue(issues, node, "結束節點必須至少有一個上游節點。");
+      if (children.length > 0) issue(issues, node, "結束節點不能有下一步。");
+    } else if (node.type === "decision") {
+      if (parents.length !== 1) issue(issues, node, "決策節點必須且只能有一個上游節點。");
       for (const port of getBranchPorts(node)) {
-        if (!port.optional && !usedPorts.has(`${node.id}\u0000${port.id}`)) issue(issues, node, `出口「${port.label}」尚未連線。`);
+        if (!usedPorts.has(`${node.id}\u0000${port.id}`)) issue(issues, node, `出口「${port.label}」尚未連線。`);
       }
       for (const ref of node.data.inputNodeIds) {
         const target = nodeById.get(ref);
         if (!target || target.type !== "decision") issue(issues, node, `前置結果引用「${ref}」不是有效的決策節點。`);
       }
     }
-    if (node.type === "end" && (outgoing.get(node.id) ?? []).length !== 0) issue(issues, node, "結束節點不能有下一步。");
   }
 
   const start = starts[0];
@@ -221,25 +277,21 @@ export function validateFlow(flow: DecisionFlow): string[] {
     };
     walk(start.id);
     for (const node of flow.nodes) if (!visited.has(node.id)) issue(issues, node, "節點無法從起點到達。");
-
     for (const node of flow.nodes) {
-      if (!decisionNode(node) && node.type !== "end") continue;
-      const ancestors = new Set<string>();
-      const traversed = new Set<string>();
-      let cursor = incoming.get(node.id)?.[0]?.source;
-      while (cursor && !traversed.has(cursor)) {
-        traversed.add(cursor);
-        ancestors.add(cursor);
-        cursor = incoming.get(cursor)?.[0]?.source;
-      }
-      if (decisionNode(node)) {
-        for (const ref of node.data.inputNodeIds) if (!ancestors.has(ref)) issue(issues, node, `前置結果「${nodeById.get(ref)?.data.label ?? ref}」必須位於此節點上游。`);
+      if (node.type !== "decision" && node.type !== "end") continue;
+      if (node.type === "decision" && node.data.inputNodeIds.length === 0) continue;
+      if (node.type === "end" && (!Array.isArray(node.data.fields) || !node.data.fields.some((field) => field?.value?.kind === "decision"))) continue;
+      const ancestorIds = ancestorDecisionIds(nodeById, incoming, node.id);
+      if (node.type === "decision") {
+        for (const ref of node.data.inputNodeIds) {
+          if (!ancestorIds.has(ref)) issue(issues, node, `前置結果「${nodeById.get(ref)?.data.label ?? ref}」必須位於此節點上游。`);
+        }
       } else if (node.type === "end" && Array.isArray(node.data.fields)) {
         for (const field of node.data.fields) {
           if (field?.value?.kind !== "decision") continue;
           const target = nodeById.get(field.value.nodeId);
           if (!target || target.type !== "decision") issue(issues, node, `回傳欄位「${field.key}」引用了無效的決策節點。`);
-          else if (!ancestors.has(target.id)) issue(issues, node, `回傳欄位「${field.key}」引用的決策必須位於此節點上游。`);
+          else if (!ancestorIds.has(target.id)) issue(issues, node, `回傳欄位「${field.key}」引用的決策必須位於此節點上游。`);
         }
       }
     }
@@ -248,7 +300,7 @@ export function validateFlow(flow: DecisionFlow): string[] {
   return [...new Set(issues)];
 }
 
-function normalizedConfidence(probabilities: number[]): number {
+export function normalizedConfidence(probabilities: number[]): number {
   if (probabilities.length < 2) return 1;
   let entropy = 0;
   for (const probability of probabilities) entropy -= probability * Math.log(Math.max(probability, 1e-12));
@@ -295,32 +347,31 @@ function endOutput(node: EndFlowNode, completed: Map<string, DecisionNodeTrace>)
     if (field.value.kind === "literal") output[field.key] = field.value.value;
     else {
       const trace = completed.get(field.value.nodeId);
-      if (!trace) throw new DecisionFlowError(`結束節點「${node.data.label}」引用了尚未執行的決策「${field.value.nodeId}」。`);
-      output[field.key] = trace.value;
+      output[field.key] = trace !== undefined ? trace.value : null;
     }
   }
   return output;
 }
-
 export async function runFlow(flow: DecisionFlow, input: unknown, laya: Pick<Laya, "systemOne">): Promise<FlowTestResult> {
   const issues = validateFlow(flow);
   if (issues.length > 0) throw new DecisionFlowError("流程尚未完成，無法執行。", issues);
-  const nodes = new Map(flow.nodes.map((node) => [node.id, node]));
-  const outgoing = new Map(flow.edges.map((edge) => [`${edge.source}\u0000${edge.sourceHandle}`, edge]));
+  const nodeById = new Map<string, FlowNode>(flow.nodes.map((node) => [node.id, node]));
+  const outgoingByPort = new Map<string, FlowEdge>();
+  for (const edge of flow.edges) {
+    outgoingByPort.set(`${edge.source}\u0000${edge.sourceHandle}`, edge);
+  }
+
+  const start = flow.nodes.find((node) => node.type === "start");
+  if (!start) throw new DecisionFlowError("流程缺少起點。");
+
   const completed = new Map<string, DecisionNodeTrace>();
   const trace: DecisionNodeTrace[] = [];
   const started = performance.now();
-  const start = flow.nodes.find((node) => node.type === "start");
-  if (!start || start.type !== "start") throw new DecisionFlowError("流程缺少起點。");
-  let current: FlowNode = start;
-  let branch = "next";
+  let currentId = start.id;
 
-  for (let step = 0; step < flow.nodes.length; step += 1) {
-    const edge = outgoing.get(`${current.id}\u0000${branch}`);
-    if (!edge) throw new DecisionFlowError(`節點「${current.data.label}」的出口「${branch}」未連線。`);
-    const next = nodes.get(edge.target);
-    if (!next) throw new DecisionFlowError("流程連線指向不存在的節點。");
-    current = next;
+  for (;;) {
+    const current = nodeById.get(currentId);
+    if (!current) throw new DecisionFlowError("流程包含指向不存在節點的連線。");
     if (current.type === "end") {
       return {
         status: "completed",
@@ -329,52 +380,47 @@ export async function runFlow(flow: DecisionFlow, input: unknown, laya: Pick<Lay
         durationMs: Math.round(performance.now() - started),
       };
     }
-    if (current.type !== "decision") throw new DecisionFlowError("流程遇到無效節點。");
 
-    const state = current.data.inputNodeIds.length === 0
-      ? input
-      : {
-          input,
-          previousDecisions: Object.fromEntries(
-            current.data.inputNodeIds.map((id) => {
-              const result = completed.get(id);
-              if (!result) throw new DecisionFlowError(`決策「${current.data.label}」引用了未執行的上游結果。`);
-              return [id, { name: result.label, value: result.value }];
-            }),
-          ),
-        };
-    const startedNode = performance.now();
-    const response = await laya.systemOne(state, { decision: current.data.question });
-    const answer = response.answers.decision as Answer;
-    const confidence = answerConfidence(answer);
-    const lowConfidenceFallback = current.data.minConfidence > 0 && confidence < current.data.minConfidence;
-    const nextBranch = lowConfidenceFallback ? current.data.lowConfidenceBranch : routeId(current, answer);
-    const port = getBranchPorts(current).find((candidate) => candidate.id === nextBranch);
-    if (!port) throw new DecisionFlowError(`決策「${current.data.label}」選到未定義的出口「${nextBranch}」。`);
-    const result: DecisionNodeTrace = {
-      nodeId: current.id,
-      label: current.data.label,
-      answer,
-      value: lowConfidenceFallback ? lowConfidenceValue(current, nextBranch) : normalizeValue(answer, current.data.trueThreshold),
-      confidence,
-      lowConfidenceFallback,
-      branch: port.label,
-      durationMs: Math.round(performance.now() - startedNode),
-    };
-    completed.set(current.id, result);
-    trace.push(result);
-    branch = nextBranch;
+    let nextEdge: FlowEdge | undefined;
+    if (current.type === "start") {
+      nextEdge = outgoingByPort.get(`${current.id}\u0000next`);
+    } else {
+      const state = current.data.inputNodeIds.length === 0
+        ? input
+        : {
+            input,
+            previousDecisions: Object.fromEntries(
+              current.data.inputNodeIds.map((id) => {
+                const result = completed.get(id);
+                if (!result) throw new DecisionFlowError(`決策「${current.data.label}」引用了未執行的上游結果。`);
+                return [id, { name: result.label, value: result.value }];
+              }),
+            ),
+          };
+      const startedNode = performance.now();
+      const response = await laya.systemOne(state, { decision: current.data.question });
+      const answer = response.answers.decision as Answer;
+      const confidence = answerConfidence(answer);
+      const lowConfidenceFallback = current.data.minConfidence > 0 && confidence < current.data.minConfidence;
+      const nextBranch = lowConfidenceFallback ? current.data.lowConfidenceBranch : routeId(current, answer);
+      const port = getBranchPorts(current).find((candidate) => candidate.id === nextBranch);
+      if (!port) throw new DecisionFlowError(`決策「${current.data.label}」選到未定義的出口「${nextBranch}」。`);
+      const result: DecisionNodeTrace = {
+        nodeId: current.id,
+        label: current.data.label,
+        answer,
+        value: lowConfidenceFallback ? lowConfidenceValue(current, nextBranch) : normalizeValue(answer, current.data.trueThreshold),
+        confidence,
+        lowConfidenceFallback,
+        branch: port.label,
+        durationMs: Math.round(performance.now() - startedNode),
+      };
+      completed.set(current.id, result);
+      trace.push(result);
+      nextEdge = outgoingByPort.get(`${current.id}\u0000${nextBranch}`);
+    }
+
+    if (!nextEdge) throw new DecisionFlowError(`流程節點「${current.data.label}」沒有有效的下一步。`);
+    currentId = nextEdge.target;
   }
-
-  throw new DecisionFlowError("流程執行超過節點數上限，可能包含迴圈。");
-}
-
-export function questionTypeLabel(question: Question): string {
-  return question.type === "choice" ? "單選" : question.type === "noul" ? "是非" : "評分";
-}
-
-export function questionOptions(question: Question): string[] {
-  if (question.type === "choice") return Object.keys(question.criteria);
-  if (question.type === "score") return question.criteria;
-  return ["false", "true"];
 }
