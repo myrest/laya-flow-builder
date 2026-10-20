@@ -1,5 +1,5 @@
-import type { Laya } from "../laya/src/index.js";
-import type { Answer, Question } from "../laya/src/types.js";
+import type { Laya } from "@receptron/laya";
+import type { Answer, Question } from "@receptron/laya";
 import type {
   BranchPort,
   DecisionFlow,

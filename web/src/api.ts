@@ -1,4 +1,4 @@
-import type { Question, SystemOneResult } from "../../../laya/src/types.js";
+import type { Question, SystemOneResult } from "@receptron/laya";
 import type { DecisionFlow, DecisionTemplate, FlowDraft, FlowDraftPreview, FlowHistoryEntry, FlowTestCase, FlowTestResult, FlowTestSuite } from "../../decision-types";
 import { isRecord } from "../../decision-guards";
 import { parseDecisionFlow, parseDecisionStoreData, parseFlowDraft, parseFlowHistoryEntry, parseFlowTestResult, parseFlowTestSuite } from "../../decision-schema";

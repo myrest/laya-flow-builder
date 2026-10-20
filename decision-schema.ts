@@ -1,4 +1,4 @@
-import type { Answer, Question } from "../laya/src/types.js";
+import type { Answer, Question } from "@receptron/laya";
 import type { DecisionFlow, DecisionNodeTrace, DecisionStoreData, DecisionTemplate, EndFlowNode, FlowEdge, FlowNode, FlowTestCase, FlowTestCaseResult, FlowTestRun, FlowTestSuite, FlowTestResult, FlowDraft, FlowDraftRun, FlowHistoryEntry, JsonValue } from "./decision-types.js";
 import { DEFAULT_MIN_CONFIDENCE, MAX_FLOW_TEST_CASES, MAX_FLOW_TEST_NAME_LENGTH } from "./decision-types.js";
 import { getDefaultLowConfidenceBranch, normalizedConfidence } from "./decision-engine.js";

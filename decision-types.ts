@@ -1,4 +1,4 @@
-import type { Answer, Question } from "../laya/src/types.js";
+import type { Answer, Question } from "@receptron/laya";
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 

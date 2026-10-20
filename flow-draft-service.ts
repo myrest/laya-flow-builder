@@ -1,4 +1,4 @@
-import type { Laya } from "../laya/src/index.js";
+import type { Laya } from "@receptron/laya";
 import { DecisionFlowError, getBranchPorts, getDefaultLowConfidenceBranch, runFlow, validateFlow } from "./decision-engine.js";
 import { isRecord } from "./decision-guards.js";
 import { MAX_FLOW_NAME_LENGTH, MAX_FLOW_NODES, MAX_FLOW_TEST_CASES, MAX_FLOW_TEST_NAME_LENGTH, MAX_INPUT_NODE_REFS, MAX_QUESTION_OPTIONS } from "./decision-types.js";

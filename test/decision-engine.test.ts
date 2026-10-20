@@ -9,7 +9,7 @@ import { flowRevision } from "../flow-test-utils.js";
 import { parseDecisionStoreData, parseFlowTestCases } from "../decision-schema.js";
 import { DecisionStore, flowVersion } from "../decision-store.js";
 import type { DecisionFlow, FlowNode, FlowTestCase, FlowDraftRun } from "../decision-types.js";
-import type { Answer, Question, SystemOneResult } from "../../laya/src/types.js";
+import type { Answer, Question, SystemOneResult } from "@receptron/laya";
 
 function choiceNode(id: string, label: string, y: number): FlowNode {
   return {

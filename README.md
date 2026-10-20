@@ -1,11 +1,16 @@
-# Laya 決策流程測試環境（PR #11）
+# Laya Flow Builder — Laya 決策流程建置工具
 
-此目錄以隔壁的 `../laya` 原始碼與 `node_modules` 執行 Laya 多語言 ONNX 模型，並提供可視化決策樹編輯器與 HTTP API。模型快取共用 Laya 的既有位置，不會再下載一份。
+Laya Flow Builder 是以 Laya 多語言 ONNX 模型建置與測試決策流程的 Web 工具及 HTTP API。模型執行使用同層的 `../laya` 原始碼；Docker 建置也需要這份相鄰的 Laya repository，因目前公開 npm 套件的特殊 token 契約與模型快取不相容。模型快取由 `LAYA_CACHE` 指定。
 
 ## 啟動
 
 ```bash
-cd ~/TEST/laya-test
+cd ~/TEST/laya-flow-builder
+npm --prefix ../laya ci
+npm --prefix ../laya run build
+npm ci
+npm --prefix web ci
+npm --prefix mcp ci
 npm run dev
 ```
 
@@ -16,6 +21,24 @@ npm run dev
 服務監聽 `0.0.0.0`，可讓同網段機器連線。流程、範本與流程草稿可公開讀取；建立、更新、刪除流程／範本、修改或執行會保存結果的批次測試、建立或修改草稿及歷史還原都需要管理員憑證。若未設定 `LAYA_ADMIN_TOKEN`／`LAYA_MCP_TOKEN`，啟動時會在資料目錄產生 `admin-token` 與 `mcp-token`（各 32 bytes、檔案權限 `0600`），只會記錄檔案路徑、不會輸出憑證；設定這兩個環境變數可改用自訂憑證，且憑證須不同。管理員登入畫面使用 `admin-token`。`/run`、`/test`、`/validate`、`/system-one` 維持免憑證。僅在可信任的內網使用，並用防火牆限制來源；跨網段時必須使用 HTTPS，避免憑證以明文傳送。
 
 首次執行若模型尚未快取，Laya 會自 Hugging Face 下載約 1.7 GB 權重至 `~/.cache/receptron-laya`。流程資料預設儲存在 `data/decision-system.json`；可用 `LAYA_DATA_DIR` 改變資料目錄。
+## Docker 運行
+
+Docker Compose 需要 `laya-flow-builder` 與 `laya` 兩個 repository 位於同一個父目錄，並以父目錄作為 build context；建置時先編譯 `../laya`，再建置本專案。容器內的 API 與網頁使用 `3000` 埠，主機端只在 loopback 發佈 `15000` 埠。流程資料直接掛載 `./data`，模型快取掛載主機的 `~/.cache/receptron-laya`；兩者不會複製進映像。容器以 UID 1000 的 `node` 使用者執行，這兩個目錄必須存在且可由 UID 1000 讀寫。
+
+```bash
+mkdir -p data "$HOME/.cache/receptron-laya"
+docker compose up --build -d
+docker compose ps
+docker compose logs -f laya
+curl -fsS http://127.0.0.1:15000/health
+```
+
+開啟 `http://127.0.0.1:15000` 使用網頁。健康檢查會等模型載入並開始監聽後才成功；若主機快取已有完整模型，容器會沿用，新主機則需連線 Hugging Face 下載模型。
+
+管理員與 MCP 權杖保存在 `data/admin-token`、`data/mcp-token`，可用 `docker compose exec laya cat /data/admin-token` 或 `docker compose exec laya cat /data/mcp-token` 讀取。MCP host 在容器外執行時，`LAYA_API_URL` 設為 `http://127.0.0.1:15000`。停止服務使用 `docker compose down`；主機的 `data/` 和模型快取目錄會保留。
+
+預設只允許本機連線。若要讓區網其他裝置連線，將 `compose.yaml` 的 `127.0.0.1:15000:3000` 改為 `15000:3000`，並限制防火牆來源；此服務的推論與部分讀取 API 不要求管理員權杖，不要直接暴露到公網。
+
 
 ## 編輯與測試流程
 
@@ -75,8 +98,8 @@ npm install --prefix mcp
 
 ```json
 {
-  "command": "/完整路徑/laya-test/mcp/node_modules/.bin/tsx",
-  "args": ["/完整路徑/laya-test/mcp/mcp-server.ts"],
+  "command": "/完整路徑/laya-flow-builder/mcp/node_modules/.bin/tsx",
+  "args": ["/完整路徑/laya-flow-builder/mcp/mcp-server.ts"],
   "env": {
     "LAYA_API_URL": "http://127.0.0.1:3000",
     "LAYA_MCP_TOKEN": "<data/mcp-token 的內容>"
@@ -124,7 +147,7 @@ npm run build
 
 ## 磁碟配置
 
-- 根目錄 `node_modules` 是 `../laya/node_modules` 的軟連結。
-- `web/node_modules` 安裝編輯器依賴。
-- Laya ONNX 模型使用既有 `~/.cache/receptron-laya` 快取。
-- `data/decision-system.json` 儲存流程與積木範本。
+- 根目錄 `package.json`、`package-lock.json` 管理後端、Laya SDK 與 TypeScript 工具依賴。
+- `web/` 與 `mcp/` 分別使用自己的 `package-lock.json`。
+- ONNX 模型快取位於 `LAYA_CACHE`（預設 `~/.cache/receptron-laya`）。
+- `LAYA_DATA_DIR` 儲存流程資料、測試案例、草稿、歷史與 API 權杖。

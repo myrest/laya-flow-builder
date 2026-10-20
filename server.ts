@@ -3,7 +3,7 @@ import os from "node:os";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Laya } from "../laya/src/index.js";
+import { Laya } from "@receptron/laya";
 import { DecisionFlowError, runFlow, validateFlow } from "./decision-engine.js";
 import { runFlowTestCases } from "./flow-test-runner.js";
 import { authorizeApiRequest, ApiAuthorizationError, loadApiSecrets } from "./api-auth.js";
@@ -11,7 +11,7 @@ import { isRecord } from "./decision-guards.js";
 import { parseDecisionFlow, parseQuestionDefinition } from "./decision-schema.js";
 import { DecisionStore, StoreConflictError } from "./decision-store.js";
 import { FlowDraftService, FlowDraftServiceError, flowDraftContract } from "./flow-draft-service.js";
-import type { Question } from "../laya/src/types.js";
+import type { Question } from "@receptron/laya";
 import type { DecisionFlow, FlowTestRun } from "./decision-types.js";
 
 const PORT = Number(process.env.PORT ?? 3000);

@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import type { Question, SystemOneResult } from "../../../laya/src/types.js";
+import type { Question, SystemOneResult } from "@receptron/laya";
 import type { DecisionFlow } from "../../decision-types";
 import { directSystemOne } from "./api";
 

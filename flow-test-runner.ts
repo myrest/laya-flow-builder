@@ -1,5 +1,5 @@
 import { runFlow } from "./decision-engine.js";
-import type { Laya } from "../laya/src/index.js";
+import type { Laya } from "@receptron/laya";
 import type { DecisionFlow, FlowTestCase, FlowTestCaseResult, FlowTestRun } from "./decision-types.js";
 import { flowRevision, outputsEqual } from "./flow-test-utils.js";
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Question } from "../../../laya/src/types.js";
+import type { Question } from "@receptron/laya";
 import { getAncestorDecisions, getBranchPorts, getDefaultLowConfidenceBranch } from "../../decision-engine";
 import type { DecisionFlow, DecisionFlowNode, DecisionTemplate, EndFlowNode, FlowNode, JsonValue, OutputValue } from "../../decision-types";
 import { MAX_INPUT_NODE_REFS } from "../../decision-types";

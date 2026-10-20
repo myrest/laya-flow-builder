@@ -1,5 +1,5 @@
 {
-  "name": "laya-test",
+  "name": "laya-flow-builder",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,5 +10,13 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && npm --prefix web run typecheck && npm --prefix mcp run typecheck",
     "test": "tsx --test test/*.test.ts",
     "test-client": "tsx test-client.ts"
+  },
+  "dependencies": {
+    "@receptron/laya": "file:../laya",
+    "tsx": "^4.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^6.0.3"
   }
 }

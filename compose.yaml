@@ -1,0 +1,25 @@
+services:
+  laya:
+    build:
+      context: ..
+      dockerfile: laya-flow-builder/Dockerfile
+    ports:
+      - "127.0.0.1:15000:3000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      LAYA_DATA_DIR: /data
+      LAYA_CACHE: /models
+    volumes:
+      - type: bind
+        source: ./data
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${HOME}/.cache/receptron-laya
+        target: /models
+        bind:
+          create_host_path: false
+    init: true
+    restart: unless-stopped

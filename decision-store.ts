@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ChoiceQuestion, NoulQuestion, Question } from "../laya/src/types.js";
+import type { ChoiceQuestion, NoulQuestion, Question } from "@receptron/laya";
 import { DEFAULT_MIN_CONFIDENCE, MAX_FLOW_NAME_LENGTH } from "./decision-types.js";
 import { getDefaultLowConfidenceBranch, validateFlow } from "./decision-engine.js";
 import { flowRevision } from "./flow-test-utils.js";
